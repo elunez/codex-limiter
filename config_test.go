@@ -63,8 +63,8 @@ func TestPluginRegistrationDeclaresRequiredCapabilities(t *testing.T) {
 	if !strings.Contains(string(encoded), `"scheduler_across_priorities":true`) {
 		t.Fatalf("registration = %s", encoded)
 	}
-	if fields := registration.Metadata.ConfigFields; len(fields) != 2 || fields[0].Name != "quota_source" || fields[1].Name != "state_path" {
-		t.Fatalf("config fields = %+v", fields)
+	if fields := registration.Metadata.ConfigFields; len(fields) != 0 {
+		t.Fatalf("installation page should not expose plugin settings: %+v", fields)
 	}
 }
 

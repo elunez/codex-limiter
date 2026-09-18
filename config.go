@@ -294,10 +294,6 @@ func pluginRegistration() registration {
 			Author:           "Jie",
 			GitHubRepository: "https://github.com/elunez/codex-limiter",
 			Logo:             "https://raw.githubusercontent.com/router-for-me/CLIProxyAPI/main/docs/logo.png",
-			ConfigFields: []pluginapi.ConfigField{
-				{Name: "quota_source", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{quotaSourceRealtime, quotaSourceManagerPlus}, Description: "额度来源，默认实时查询。"},
-				{Name: "state_path", Type: pluginapi.ConfigFieldTypeString, Description: "页面设置和账号覆盖规则的状态文件。"},
-			},
 		},
 		Capabilities: registrationCapabilities{Scheduler: true, SchedulerAcrossPriorities: true, ManagementAPI: true, RequestInterceptor: true, RequestLifecyclePlugin: true},
 	}

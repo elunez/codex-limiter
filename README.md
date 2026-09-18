@@ -25,11 +25,12 @@ plugins:
   configs:
     codex-limiter:
       enabled: true
-      priority: 80
-      quota_source: realtime
+      priority: 99
 ```
 
-页面的公共设置只包含额度数据源；并发数、等待时间、额度阈值、停止条件和查询失败策略都在账号设置中配置。账号设置保存在 `~/.cli-proxy-api/plugins/codex-limiter/state.json`，文件权限为 `0600`。选择 CPA Manager Plus 时无需填写地址或凭证：插件会从当前管理中心请求自动读取服务地址，并像 codex-keepalive 一样复用“记住凭证”保存的管理凭证。插件优先读取 Manager Plus 的额度快照；若某个账号缺少 5 小时或周额度，则实时查询并替换为该账号的完整额度，避免混用不同时间点的数据。管理接口不会把已保存的地址或凭证返回到浏览器。
+插件优先级使用宿主配置字段，安装示例默认设置为 `99`；已有安装不会在更新时自动覆盖优先级，请在插件管理中将其调整为 `99`。
+
+安装配置页不需要填写插件参数。调度控制页面的公共设置只包含额度数据源；并发数、等待时间、额度阈值、停止条件和查询失败策略都在账号设置中配置。账号设置保存在 `~/.cli-proxy-api/plugins/codex-limiter/state.json`，文件权限为 `0600`。选择 CPA Manager Plus 时无需填写地址或凭证：插件会从当前管理中心请求自动读取服务地址，并像 codex-keepalive 一样复用“记住凭证”保存的管理凭证。插件优先读取 Manager Plus 的额度快照；若某个账号缺少 5 小时或周额度，则实时查询并替换为该账号的完整额度，避免混用不同时间点的数据。管理接口不会把已保存的地址或凭证返回到浏览器。旧配置中的 `quota_source` 和 `state_path` 仍会继续解析，以保持兼容。
 
 ## 构建与验证
 
@@ -85,7 +86,7 @@ plugins:
   configs:
     codex-limiter:
       enabled: true
-      priority: 80
+      priority: 99
 ```
 
 加载成功后，管理中心左侧会出现“调度控制”。如果同时安装了其他接管 Codex Scheduler 的插件，请先停用它们，避免调度冲突。
