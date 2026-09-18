@@ -95,17 +95,25 @@ type AccountSnapshot struct {
 }
 
 type Service struct {
-	mu         sync.RWMutex
-	cfg        Config
-	settings   GlobalSettings
-	overrides  map[string]AccountOverride
-	accounts   map[string]AccountSnapshot
-	host       HostClient
-	limiter    *accountLimiter
-	classifier authClassifier
-	rr         map[string]uint64
-	refreshMu  sync.Mutex
+	mu          sync.RWMutex
+	cfg         Config
+	settings    GlobalSettings
+	overrides   map[string]AccountOverride
+	accounts    map[string]AccountSnapshot
+	host        HostClient
+	limiter     *accountLimiter
+	classifier  authClassifier
+	rr          map[string]uint64
+	affinity    map[string]sessionBinding
+	affinityGC  time.Time
+	refreshMu   sync.Mutex
+	refreshStop chan struct{}
+	refreshDone chan struct{}
+	refreshOnce sync.Once
+	stopOnce    sync.Once
 }
+
+const quotaRefreshInterval = 30 * time.Second
 
 func NewService(cfg Config, host HostClient) (*Service, error) {
 	state, err := loadState(cfg.StatePath, cfg.Defaults)
@@ -121,6 +129,7 @@ func NewService(cfg Config, host HostClient) (*Service, error) {
 		limiter:    newAccountLimiter(state.Settings.MaxConcurrencyPerAccount),
 		classifier: newHostAuthClassifier(host),
 		rr:         make(map[string]uint64),
+		affinity:   make(map[string]sessionBinding),
 	}, nil
 }
 
@@ -132,9 +141,44 @@ func (s *Service) Reconfigure(cfg Config) error {
 	return nil
 }
 
+// StartQuotaRefresh 启动后台额度刷新。调度请求只读取最近一次刷新结果，
+// 避免把额度查询延迟带入每一个请求的调度路径。
+func (s *Service) StartQuotaRefresh() {
+	if s == nil {
+		return
+	}
+	s.refreshOnce.Do(func() {
+		s.refreshStop = make(chan struct{})
+		s.refreshDone = make(chan struct{})
+		go s.quotaRefreshLoop()
+	})
+}
+
+func (s *Service) quotaRefreshLoop() {
+	defer close(s.refreshDone)
+	// 插件注册后先刷新一次，后续按固定周期更新。
+	_ = s.RefreshAccounts(nil)
+	ticker := time.NewTicker(quotaRefreshInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			_ = s.RefreshAccounts(nil)
+		case <-s.refreshStop:
+			return
+		}
+	}
+}
+
 func (s *Service) Stop() {
 	if s != nil {
-		s.limiter.Stop()
+		s.stopOnce.Do(func() {
+			if s.refreshStop != nil {
+				close(s.refreshStop)
+				<-s.refreshDone
+			}
+			s.limiter.Stop()
+		})
 	}
 }
 
@@ -208,6 +252,8 @@ func (s *Service) SaveGlobalSettings(settings GlobalSettings) error {
 	err = s.persistLocked()
 	if err != nil {
 		s.settings = previous
+	} else if previous.SessionAffinityEnabled != normalized.SessionAffinityEnabled || previous.SessionAffinityTTLSeconds != normalized.SessionAffinityTTLSeconds {
+		clear(s.affinity)
 	}
 	s.mu.Unlock()
 	if err == nil {

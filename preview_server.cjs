@@ -9,7 +9,9 @@ if (!match) throw new Error('无法从 page.go 提取页面');
 const html = match[1].replace("function savedManagementKey(){", "function savedManagementKey(){return 'preview-token';");
 
 let settings = {
-  quota_source: 'realtime'
+  quota_source: 'realtime',
+  session_affinity_enabled: true,
+  session_affinity_ttl_seconds: 3600
 };
 
 const now = Date.now();
@@ -81,10 +83,15 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (url.pathname === prefix + '/status' && req.method === 'GET') return json(res, 200, payload());
+  if (url.pathname === prefix + '/runtime' && req.method === 'GET') return json(res, 200, payload());
   if (url.pathname === prefix + '/refresh' && req.method === 'POST') return json(res, 200, payload());
   if (url.pathname === prefix + '/settings' && req.method === 'PUT') {
     const update = await readBody(req);
-    settings = { quota_source: update.quota_source };
+    settings = {
+      quota_source: update.quota_source,
+      session_affinity_enabled: update.session_affinity_enabled !== false,
+      session_affinity_ttl_seconds: Number(update.session_affinity_ttl_seconds) || 3600
+    };
     return json(res, 200, { ok: true });
   }
   if (url.pathname === prefix + '/account' && req.method === 'PUT') {

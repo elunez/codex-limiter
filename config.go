@@ -23,6 +23,8 @@ const (
 	matchAll               = "all"
 	failureAllow           = "allow"
 	failureDeny            = "deny"
+	defaultAffinityTTL     = 3600
+	maxAffinityTTL         = 7 * 24 * 3600
 )
 
 type WindowRule struct {
@@ -31,16 +33,18 @@ type WindowRule struct {
 }
 
 type GlobalSettings struct {
-	Enabled                  bool       `json:"enabled"`
-	MaxConcurrencyPerAccount int        `json:"max_concurrency_per_account"`
-	QueueTimeoutSeconds      int        `json:"queue_timeout_seconds"`
-	QuotaSource              string     `json:"quota_source"`
-	ManagerPlusBaseURL       string     `json:"manager_plus_base_url,omitempty"`
-	ManagerPlusManagementKey string     `json:"manager_plus_management_key,omitempty"`
-	FiveHour                 WindowRule `json:"five_hour"`
-	Weekly                   WindowRule `json:"weekly"`
-	MatchPolicy              string     `json:"match_policy"`
-	QueryFailurePolicy       string     `json:"query_failure_policy"`
+	Enabled                   bool       `json:"enabled"`
+	MaxConcurrencyPerAccount  int        `json:"max_concurrency_per_account"`
+	QueueTimeoutSeconds       int        `json:"queue_timeout_seconds"`
+	QuotaSource               string     `json:"quota_source"`
+	ManagerPlusBaseURL        string     `json:"manager_plus_base_url,omitempty"`
+	ManagerPlusManagementKey  string     `json:"manager_plus_management_key,omitempty"`
+	SessionAffinityEnabled    bool       `json:"session_affinity_enabled"`
+	SessionAffinityTTLSeconds int        `json:"session_affinity_ttl_seconds"`
+	FiveHour                  WindowRule `json:"five_hour"`
+	Weekly                    WindowRule `json:"weekly"`
+	MatchPolicy               string     `json:"match_policy"`
+	QueryFailurePolicy        string     `json:"query_failure_policy"`
 }
 
 type AccountSettings struct {
@@ -64,14 +68,16 @@ type Config struct {
 
 func defaultSettings() GlobalSettings {
 	return GlobalSettings{
-		Enabled:                  true,
-		MaxConcurrencyPerAccount: 3,
-		QueueTimeoutSeconds:      300,
-		QuotaSource:              quotaSourceRealtime,
-		FiveHour:                 WindowRule{Enabled: true, CutoffPercent: 95},
-		Weekly:                   WindowRule{Enabled: true, CutoffPercent: 95},
-		MatchPolicy:              matchAny,
-		QueryFailurePolicy:       failureAllow,
+		Enabled:                   true,
+		MaxConcurrencyPerAccount:  3,
+		QueueTimeoutSeconds:       300,
+		QuotaSource:               quotaSourceRealtime,
+		SessionAffinityEnabled:    true,
+		SessionAffinityTTLSeconds: defaultAffinityTTL,
+		FiveHour:                  WindowRule{Enabled: true, CutoffPercent: 95},
+		Weekly:                    WindowRule{Enabled: true, CutoffPercent: 95},
+		MatchPolicy:               matchAny,
+		QueryFailurePolicy:        failureAllow,
 	}
 }
 
@@ -118,6 +124,20 @@ func decodeConfig(raw []byte) (Config, error) {
 	}
 	if value := strings.TrimSpace(values["manager_plus_management_key"]); value != "" {
 		cfg.Defaults.ManagerPlusManagementKey = value
+	}
+	if value := values["session_affinity_enabled"]; value != "" {
+		enabled, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			return Config{}, fmt.Errorf("session_affinity_enabled must be true or false")
+		}
+		cfg.Defaults.SessionAffinityEnabled = enabled
+	}
+	if value := values["session_affinity_ttl_seconds"]; value != "" {
+		seconds, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return Config{}, fmt.Errorf("session_affinity_ttl_seconds must be an integer")
+		}
+		cfg.Defaults.SessionAffinityTTLSeconds = seconds
 	}
 	if value := values["five_hour_enabled"]; value != "" {
 		enabled, err := strconv.ParseBool(strings.TrimSpace(value))
@@ -170,6 +190,9 @@ func normalizeGlobalSettings(settings GlobalSettings) (GlobalSettings, error) {
 	}
 	if settings.QueueTimeoutSeconds < 0 || settings.QueueTimeoutSeconds > 86400 {
 		return settings, fmt.Errorf("queue_timeout_seconds must be between 0 and 86400")
+	}
+	if settings.SessionAffinityTTLSeconds < 1 || settings.SessionAffinityTTLSeconds > maxAffinityTTL {
+		return settings, fmt.Errorf("session_affinity_ttl_seconds must be between 1 and %d", maxAffinityTTL)
 	}
 	settings.QuotaSource = strings.ToLower(strings.TrimSpace(settings.QuotaSource))
 	if settings.QuotaSource == "" {

@@ -215,6 +215,7 @@ func configureService(raw []byte) error {
 		if err != nil {
 			return err
 		}
+		service.StartQuotaRefresh()
 	} else {
 		if err := service.Reconfigure(cfg); err != nil {
 			return err

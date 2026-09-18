@@ -18,6 +18,11 @@ type schedulableCandidate struct {
 	limit      int
 }
 
+type sessionBinding struct {
+	AuthID    string
+	ExpiresAt time.Time
+}
+
 func (s *Service) Pick(request pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
 	if !requestContainsCodex(request) {
 		return pluginapi.SchedulerPickResponse{Handled: false}, nil
@@ -35,8 +40,6 @@ func (s *Service) Pick(request pluginapi.SchedulerPickRequest) (pluginapi.Schedu
 	if len(controlledIDs) == 0 {
 		return pluginapi.SchedulerPickResponse{Handled: false}, nil
 	}
-	refreshErr := s.RefreshAccounts(controlledIDs)
-
 	now := time.Now()
 	allowed := make([]schedulableCandidate, 0, len(request.Candidates))
 	blockedReasons := make([]string, 0)
@@ -53,9 +56,6 @@ func (s *Service) Pick(request pluginapi.SchedulerPickRequest) (pluginapi.Schedu
 		account, ok := s.accounts[candidate.ID]
 		if !ok {
 			account = AccountSnapshot{AuthID: candidate.ID, LastError: "尚未取得账号额度"}
-		}
-		if refreshErr != nil {
-			account.LastError = refreshErr.Error()
 		}
 		decision := s.accountDecision(account, effective, now)
 		if decision.Blocked {
@@ -95,31 +95,95 @@ func (s *Service) Pick(request pluginapi.SchedulerPickRequest) (pluginapi.Schedu
 		}
 	}
 	highest := make([]schedulableCandidate, 0, len(pool))
+	byID := make(map[string]schedulableCandidate, len(allowed))
+	for _, item := range allowed {
+		byID[item.candidate.ID] = item
+	}
 	for _, item := range pool {
 		if item.candidate.Priority == maxPriority {
 			highest = append(highest, item)
 		}
 	}
-	minLoad := highest[0].active + highest[0].queued
-	for _, item := range highest[1:] {
-		if load := item.active + item.queued; load < minLoad {
-			minLoad = load
-		}
-	}
-	lightest := highest[:0]
-	for _, item := range highest {
-		if item.active+item.queued == minLoad {
-			lightest = append(lightest, item)
-		}
-	}
-	sort.Slice(lightest, func(i, j int) bool { return lightest[i].candidate.ID < lightest[j].candidate.ID })
+	sort.Slice(highest, func(i, j int) bool { return highest[i].candidate.ID < highest[j].candidate.ID })
 	s.mu.Lock()
+	now = time.Now()
+	s.cleanupAffinityLocked(now)
+	settings := s.settings
+	affinityKey := schedulerAffinityKey(request)
+	keepBinding := false
+	if settings.SessionAffinityEnabled && affinityKey != "" {
+		if binding, ok := s.affinity[affinityKey]; ok {
+			if !binding.ExpiresAt.After(now) {
+				delete(s.affinity, affinityKey)
+			} else if item, exists := byID[binding.AuthID]; exists && (!item.controlled || item.active < item.limit) {
+				binding.ExpiresAt = now.Add(time.Duration(settings.SessionAffinityTTLSeconds) * time.Second)
+				s.affinity[affinityKey] = binding
+				selected := item.candidate
+				s.mu.Unlock()
+				return pluginapi.SchedulerPickResponse{AuthID: selected.ID, Handled: true}, nil
+			} else if _, exists := byID[binding.AuthID]; exists {
+				// A full bound account is allowed to overflow temporarily. Keep the
+				// binding so the next request returns to it after capacity recovers.
+				keepBinding = true
+			} else {
+				delete(s.affinity, affinityKey)
+			}
+		}
+	}
 	key := fmt.Sprintf("%s|%s|%d", strings.ToLower(request.Provider), request.Model, maxPriority)
-	index := s.rr[key] % uint64(len(lightest))
+	index := s.rr[key] % uint64(len(highest))
 	s.rr[key]++
-	selected := lightest[index].candidate
+	selected := highest[index].candidate
+	if settings.SessionAffinityEnabled && affinityKey != "" && !keepBinding {
+		s.affinity[affinityKey] = sessionBinding{AuthID: selected.ID, ExpiresAt: now.Add(time.Duration(settings.SessionAffinityTTLSeconds) * time.Second)}
+	}
 	s.mu.Unlock()
 	return pluginapi.SchedulerPickResponse{AuthID: selected.ID, Handled: true}, nil
+}
+
+func (s *Service) cleanupAffinityLocked(now time.Time) {
+	if now.Sub(s.affinityGC) < time.Minute {
+		return
+	}
+	for key, binding := range s.affinity {
+		if !binding.ExpiresAt.After(now) {
+			delete(s.affinity, key)
+		}
+	}
+	s.affinityGC = now
+}
+
+func schedulerAffinityKey(request pluginapi.SchedulerPickRequest) string {
+	sessionID := schedulerSessionID(request.Options)
+	if sessionID == "" {
+		return ""
+	}
+	provider := strings.ToLower(strings.TrimSpace(request.Provider))
+	if provider == "" {
+		for _, candidate := range request.Candidates {
+			if strings.EqualFold(candidate.Provider, "codex") {
+				provider = "codex"
+				break
+			}
+		}
+	}
+	return strings.Join([]string{provider, strings.TrimSpace(request.Model), sessionID}, "|")
+}
+
+func schedulerSessionID(options pluginapi.SchedulerOptions) string {
+	for _, key := range []string{"canonical_session_id", "execution_session_id", "derived_session_id", "session_id", "sessionId"} {
+		if value, ok := options.Metadata[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	for _, key := range []string{"X-Claude-Code-Session-Id", "Session-Id", "Session_id", "X-Session-ID", "X-Session-Affinity", "X-Client-Request-Id"} {
+		for header, values := range options.Headers {
+			if strings.EqualFold(header, key) && len(values) > 0 && strings.TrimSpace(values[0]) != "" {
+				return strings.TrimSpace(values[0])
+			}
+		}
+	}
+	return ""
 }
 
 func requestContainsCodex(request pluginapi.SchedulerPickRequest) bool {

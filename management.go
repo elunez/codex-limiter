@@ -17,7 +17,9 @@ const (
 )
 
 type publicSettings struct {
-	QuotaSource string `json:"quota_source"`
+	QuotaSource               string `json:"quota_source"`
+	SessionAffinityEnabled    bool   `json:"session_affinity_enabled"`
+	SessionAffinityTTLSeconds int    `json:"session_affinity_ttl_seconds"`
 }
 
 type statusAccount struct {
@@ -53,7 +55,8 @@ func registerManagement() pluginapi.ManagementRegistrationResponse {
 		Resources: []pluginapi.ResourceRoute{{Path: "/status", Menu: "调度控制", Description: "Codex 账号并发与额度调度控制。"}},
 		Routes: []pluginapi.ManagementRoute{
 			{Method: http.MethodGet, Path: managementBasePath + "/status", Description: "读取账号调度状态。"},
-			{Method: http.MethodPut, Path: managementBasePath + "/settings", Description: "保存额度数据源。"},
+			{Method: http.MethodGet, Path: managementBasePath + "/runtime", Description: "读取缓存的账号运行状态，不查询额度。"},
+			{Method: http.MethodPut, Path: managementBasePath + "/settings", Description: "保存额度数据源和会话粘性设置。"},
 			{Method: http.MethodPut, Path: managementBasePath + "/account", Description: "保存账号调度设置。"},
 			{Method: http.MethodPost, Path: managementBasePath + "/refresh", Description: "立即查询全部账号额度。"},
 		},
@@ -84,6 +87,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 			refreshErr = current.RefreshAccounts(nil)
 		}
 		return okEnvelope(jsonResponse(http.StatusOK, buildStatus(current, refreshErr)))
+	case method == http.MethodGet && path == "/runtime":
+		return okEnvelope(jsonResponse(http.StatusOK, buildStatus(current, nil)))
 	case method == http.MethodPost && path == "/refresh":
 		if err := syncManagerPlusConnection(current, request.Headers); err != nil {
 			return okEnvelope(jsonResponse(http.StatusBadGateway, map[string]string{"error": err.Error()}))
@@ -94,13 +99,21 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(jsonResponse(http.StatusOK, buildStatus(current, nil)))
 	case method == http.MethodPut && path == "/settings":
 		var payload struct {
-			QuotaSource string `json:"quota_source"`
+			QuotaSource               string `json:"quota_source"`
+			SessionAffinityEnabled    *bool  `json:"session_affinity_enabled"`
+			SessionAffinityTTLSeconds *int   `json:"session_affinity_ttl_seconds"`
 		}
 		if err := json.Unmarshal(request.Body, &payload); err != nil {
 			return okEnvelope(jsonResponse(http.StatusBadRequest, map[string]string{"error": "invalid JSON body"}))
 		}
 		settings, _, _ := current.Snapshot()
 		settings.QuotaSource = payload.QuotaSource
+		if payload.SessionAffinityEnabled != nil {
+			settings.SessionAffinityEnabled = *payload.SessionAffinityEnabled
+		}
+		if payload.SessionAffinityTTLSeconds != nil {
+			settings.SessionAffinityTTLSeconds = *payload.SessionAffinityTTLSeconds
+		}
 		// 与 codex-keepalive 页面一致，复用管理中心“记住凭证”后随请求
 		// 携带的管理密钥，不要求用户在插件页面再次输入。
 		if settings.QuotaSource == quotaSourceManagerPlus {
@@ -172,7 +185,9 @@ func buildStatus(current *Service, refreshErr error) statusPayload {
 		Version:     pluginVersion,
 		GeneratedAt: now,
 		Settings: publicSettings{
-			QuotaSource: settings.QuotaSource,
+			QuotaSource:               settings.QuotaSource,
+			SessionAffinityEnabled:    settings.SessionAffinityEnabled,
+			SessionAffinityTTLSeconds: settings.SessionAffinityTTLSeconds,
 		},
 	}
 	if refreshErr != nil {

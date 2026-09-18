@@ -4,7 +4,7 @@
     {
       "id": "codex-limiter",
       "name": "Codex 调度控制",
-      "description": "Limits concurrent Codex requests per account and stops scheduling accounts that reach configurable five-hour or weekly quota thresholds.",
+      "description": "Controls Codex concurrency by account, keeps sessions sticky for a configurable duration, and stops scheduling accounts that reach quota thresholds.",
       "author": "elunez",
       "repository": "https://github.com/elunez/codex-limiter",
       "homepage": "https://github.com/elunez/codex-limiter",

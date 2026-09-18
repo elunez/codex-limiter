@@ -25,8 +25,20 @@ func loadState(path string, defaults GlobalSettings) (persistedState, error) {
 	if err != nil {
 		return state, fmt.Errorf("read state: %w", err)
 	}
+	var document struct {
+		Settings map[string]json.RawMessage `json:"settings"`
+	}
+	if err := json.Unmarshal(raw, &document); err != nil {
+		return state, fmt.Errorf("decode state: %w", err)
+	}
 	if err := json.Unmarshal(raw, &state); err != nil {
 		return state, fmt.Errorf("decode state: %w", err)
+	}
+	if _, exists := document.Settings["session_affinity_enabled"]; !exists {
+		state.Settings.SessionAffinityEnabled = defaults.SessionAffinityEnabled
+	}
+	if _, exists := document.Settings["session_affinity_ttl_seconds"]; !exists {
+		state.Settings.SessionAffinityTTLSeconds = defaults.SessionAffinityTTLSeconds
 	}
 	settings, err := normalizeGlobalSettings(state.Settings)
 	if err != nil {

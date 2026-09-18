@@ -15,10 +15,19 @@ func TestManagementRegistrationAndPage(t *testing.T) {
 	if len(registration.Resources) != 1 || registration.Resources[0].Menu != "调度控制" {
 		t.Fatalf("resources = %+v", registration.Resources)
 	}
-	for _, text := range []string{"Codex 调度控制", "启用调度控制", "额度查询失败时", "实时查询", "账号调度状态", "优先读取额度快照，缺失时实时补全", "savedManagementKey", "plugin-version", managerPlusOriginHeader, managerPlusKeyHeader, ">序号<", ">并发数<", ">排队数<", ">停止调度<", "5 条/页", "account-page-jump"} {
+	for _, text := range []string{"Codex 调度控制", "启用调度控制", "额度查询失败时", "实时查询", "账号调度状态", "后台每 30 秒刷新额度，调度时只检查状态", "会话粘性", "粘性时间", "session_affinity_enabled", "savedManagementKey", "plugin-version", managerPlusOriginHeader, managerPlusKeyHeader, ">序号<", ">并发数<", ">排队数<", ">停止调度<", "5 条/页", "account-page-jump", "request('/runtime')", "setInterval(pollRuntime,2000)"} {
 		if !strings.Contains(statusPageHTML, text) {
 			t.Fatalf("page missing %q", text)
 		}
+	}
+	foundRuntime := false
+	for _, route := range registration.Routes {
+		if route.Method == http.MethodGet && route.Path == managementBasePath+"/runtime" {
+			foundRuntime = true
+		}
+	}
+	if !foundRuntime {
+		t.Fatal("runtime status route is not registered")
 	}
 	if strings.Contains(statusPageHTML, "CPA Manager Plus 已连接") {
 		t.Fatal("realtime page contains connection banner")
@@ -27,6 +36,41 @@ func TestManagementRegistrationAndPage(t *testing.T) {
 		if strings.Contains(statusPageHTML, removed) {
 			t.Fatalf("page still contains removed UI %q", removed)
 		}
+	}
+}
+
+func TestSaveSessionAffinitySettings(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.StatePath = filepath.Join(t.TempDir(), "state.json")
+	target, err := NewService(cfg, &fakeHostClient{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceMu.Lock()
+	previous := service
+	service = target
+	serviceMu.Unlock()
+	defer func() {
+		serviceMu.Lock()
+		service = previous
+		serviceMu.Unlock()
+		target.Stop()
+	}()
+
+	raw, err := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodPut,
+		Path:   "/v0/management" + managementBasePath + "/settings",
+		Body:   json.RawMessage(`{"quota_source":"realtime","session_affinity_enabled":false,"session_affinity_ttl_seconds":7200}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handleManagement(raw); err != nil {
+		t.Fatal(err)
+	}
+	saved, _, _ := target.Snapshot()
+	if saved.SessionAffinityEnabled || saved.SessionAffinityTTLSeconds != 7200 {
+		t.Fatalf("session affinity settings = %+v", saved)
 	}
 }
 
@@ -165,6 +209,67 @@ func TestStatusRefreshesManagerPlusCredentialFromPageContext(t *testing.T) {
 	}
 	if host.request.URL != "http://manager.example/v0/management/quota-snapshots/query" || host.request.Headers.Get("Authorization") != "Bearer manager-admin-key" {
 		t.Fatalf("quota request used stale manager context: %+v", host.request)
+	}
+}
+
+func TestRuntimeStatusDoesNotQueryQuota(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.StatePath = filepath.Join(t.TempDir(), "state.json")
+	host := &capturingHostClient{fakeHostClient: fakeHostClient{
+		entries: []pluginapi.HostAuthFileEntry{{ID: "auth-a", AuthIndex: "index-a", Provider: "codex"}},
+		httpResult: pluginapi.HTTPResponse{
+			StatusCode: http.StatusOK,
+			Body:       []byte(`{"items":[]}`),
+		},
+	}}
+	target, err := NewService(cfg, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := defaultSettings()
+	settings.QuotaSource = quotaSourceManagerPlus
+	settings.ManagerPlusBaseURL = "http://manager.example"
+	settings.ManagerPlusManagementKey = "manager-key"
+	if err := target.SaveGlobalSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	target.mu.Lock()
+	target.accounts["auth-a"] = AccountSnapshot{AuthID: "auth-a", AuthIndex: "index-a", Email: "member@example.com"}
+	target.mu.Unlock()
+	serviceMu.Lock()
+	previous := service
+	service = target
+	serviceMu.Unlock()
+	defer func() {
+		serviceMu.Lock()
+		service = previous
+		serviceMu.Unlock()
+		target.Stop()
+	}()
+
+	raw, err := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodGet,
+		Path:   "/v0/management" + managementBasePath + "/runtime",
+		Headers: http.Header{
+			managerPlusKeyHeader:    []string{"new-manager-key"},
+			managerPlusOriginHeader: []string{"http://new-manager.example"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handleManagement(raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.requests) != 0 {
+		t.Fatalf("runtime status unexpectedly queried quota: %+v", host.requests)
+	}
+	saved, _, accounts := target.Snapshot()
+	if saved.ManagerPlusBaseURL != "http://manager.example" || saved.ManagerPlusManagementKey != "manager-key" {
+		t.Fatalf("runtime status unexpectedly changed manager context: %+v", saved)
+	}
+	if len(accounts) != 1 || accounts[0].AuthID != "auth-a" {
+		t.Fatalf("runtime status changed account snapshot: %+v", accounts)
 	}
 }
 
