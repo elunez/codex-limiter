@@ -24,7 +24,7 @@ plugins:
   enabled: true
   dir: "plugins"
   configs:
-    codex-concurrency-limiter:
+    codex-limiter:
       enabled: true
       priority: 80
       max_concurrency_per_account: 3
@@ -38,14 +38,14 @@ plugins:
       query_failure_policy: allow
 ```
 
-页面设置保存在 `~/.cli-proxy-api/plugins/codex-concurrency-limiter/state.json`，文件权限为 `0600`。选择 CPA Manager Plus 时无需填写地址或凭证：插件会从当前管理中心请求自动读取服务地址，并像 codex-keepalive 一样复用“记住凭证”保存的管理凭证。管理接口不会把已保存的地址或凭证返回到浏览器。
+页面设置保存在 `~/.cli-proxy-api/plugins/codex-limiter/state.json`，文件权限为 `0600`。选择 CPA Manager Plus 时无需填写地址或凭证：插件会从当前管理中心请求自动读取服务地址，并像 codex-keepalive 一样复用“记住凭证”保存的管理凭证。管理接口不会把已保存的地址或凭证返回到浏览器。
 
 ## 构建与验证
 
 ```sh
 make test
 make vet
-make package VERSION=0.0.1
+make package VERSION=0.0.3
 ```
 
 ## 自动发布
@@ -65,11 +65,13 @@ plugins:
     - "https://raw.githubusercontent.com/elunez/codex-limiter/main/registry.json"
 ```
 
-重新加载配置后，在 CPA 管理中心打开“插件商店”，搜索“Codex 调度控制”或 `codex-concurrency-limiter`，点击安装。安装器会自动选择当前系统和架构，并将插件写入 `plugins.dir` 对应目录。
+重新加载配置后，在 CPA 管理中心打开“插件商店”，搜索“Codex 调度控制”或 `codex-limiter`，点击安装。安装器会自动选择当前系统和架构，并将插件写入 `plugins.dir` 对应目录。
+
+如果已经安装过早期名称 `codex-concurrency-limiter`，请先在插件管理中停用并卸载旧插件，再刷新商店并安装 `codex-limiter`；两个标识不要同时启用。
 
 安装完成后，在“插件管理”中启用插件。左侧菜单会出现“调度控制”，全局默认值和单账号覆盖都在该页面中设置。插件页面会自动读取管理中心勾选“记住凭证”后保存的登录信息，无需另行填写 Manager Plus 地址或管理凭证。
 
-更新时在 CPA 插件管理中点击“重新安装”即可。账号设置保存在 `~/.cli-proxy-api/plugins/codex-concurrency-limiter/state.json`，只要未删除该目录，重新安装不会清空现有设置。
+更新时在 CPA 插件管理中点击“重新安装”即可。账号设置保存在 `~/.cli-proxy-api/plugins/codex-limiter/state.json`，只要未删除该目录，重新安装不会清空现有设置。
 
 仓库根目录包含 CLIProxyAPI 插件商店使用的 `registry.json`。如需进入官方默认商店，还需要向 [`router-for-me/CLIProxyAPI-Plugins-Store`](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store) 提交对应条目。
 
@@ -78,10 +80,10 @@ plugins:
 从 [GitHub Releases](https://github.com/elunez/codex-limiter/releases) 下载与系统和架构对应的压缩包，解压后将动态库放入 CLIProxyAPI 的插件运行目录。例如：
 
 ```text
-plug/runtime/linux/amd64/codex-concurrency-limiter.so
-plug/runtime/linux/arm64/codex-concurrency-limiter.so
-plug/runtime/darwin/amd64/codex-concurrency-limiter.dylib
-plug/runtime/darwin/arm64/codex-concurrency-limiter.dylib
+plug/runtime/linux/amd64/codex-limiter.so
+plug/runtime/linux/arm64/codex-limiter.so
+plug/runtime/darwin/amd64/codex-limiter.dylib
+plug/runtime/darwin/arm64/codex-limiter.dylib
 ```
 
 随后在配置中启用插件，并重启或重新加载 CLIProxyAPI：
@@ -90,7 +92,7 @@ plug/runtime/darwin/arm64/codex-concurrency-limiter.dylib
 plugins:
   enabled: true
   configs:
-    codex-concurrency-limiter:
+    codex-limiter:
       enabled: true
       priority: 80
 ```

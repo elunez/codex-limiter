@@ -2,7 +2,7 @@
   "schema_version": 1,
   "plugins": [
     {
-      "id": "codex-concurrency-limiter",
+      "id": "codex-limiter",
       "name": "Codex 调度控制",
       "description": "Limits concurrent Codex requests per account and stops scheduling accounts that reach configurable five-hour or weekly quota thresholds.",
       "author": "elunez",

@@ -11,10 +11,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-const pluginID = "codex-concurrency-limiter"
+const pluginID = "codex-limiter"
 
 // pluginVersion 会在发布构建时由 -ldflags 注入。
-var pluginVersion = "0.0.1"
+var pluginVersion = "0.0.3"
 
 const (
 	quotaSourceRealtime    = "realtime"
@@ -279,9 +279,11 @@ func pluginRegistration() registration {
 	return registration{
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
-			Name:    "Codex 调度控制",
-			Version: pluginVersion,
-			Author:  "Jie",
+			Name:             "Codex 调度控制",
+			Version:          pluginVersion,
+			Author:           "Jie",
+			GitHubRepository: "https://github.com/elunez/codex-limiter",
+			Logo:             "https://raw.githubusercontent.com/router-for-me/CLIProxyAPI/main/docs/logo.png",
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "max_concurrency_per_account", Type: pluginapi.ConfigFieldTypeInteger, Description: "默认单账号最大并发数，范围 1～64。"},
 				{Name: "queue_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "并发已满时等待空位的秒数，范围 0～86400。"},

@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PLUGIN_ID: codex-concurrency-limiter
+  PLUGIN_ID: codex-limiter
 
 jobs:
   metadata:
@@ -87,7 +87,7 @@ jobs:
           jq -e '
             .schema_version == 1 and
             (.plugins | length == 1) and
-            (.plugins[0].id == "codex-concurrency-limiter") and
+            (.plugins[0].id == "codex-limiter") and
             (.plugins[0].repository == "https://github.com/elunez/codex-limiter")
           ' registry.json >/dev/null
 

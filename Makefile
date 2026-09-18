@@ -1,5 +1,5 @@
-PLUGIN_ID := codex-concurrency-limiter
-VERSION ?= 0.0.1
+PLUGIN_ID := codex-limiter
+VERSION ?= 0.0.3
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
 DIST_DIR ?= dist

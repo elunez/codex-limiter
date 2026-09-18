@@ -59,7 +59,7 @@ function payload() {
     if (item.decision.blocked) out.blocked++; else out.schedulable++;
     return out;
   }, { schedulable: 0, total: 0, active: 0, queued: 0, blocked: 0 });
-  return { plugin_id: 'codex-concurrency-limiter', version: '0.0.1', generated_at: new Date().toISOString(), settings, summary, accounts };
+  return { plugin_id: 'codex-limiter', version: '0.0.3', generated_at: new Date().toISOString(), settings, summary, accounts };
 }
 
 function json(res, status, value) {
@@ -76,7 +76,7 @@ function readBody(req) {
   });
 }
 
-const prefix = '/v0/management/plugins/codex-concurrency-limiter';
+const prefix = '/v0/management/plugins/codex-limiter';
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://' + req.headers.host);
   if (url.pathname === '/' || url.pathname === '/status') {

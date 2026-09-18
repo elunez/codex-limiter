@@ -19,6 +19,9 @@ func TestDecodeConfigDefaults(t *testing.T) {
 	if filepath.Base(cfg.StatePath) != "state.json" {
 		t.Fatalf("state path = %q", cfg.StatePath)
 	}
+	if filepath.Base(filepath.Dir(cfg.StatePath)) != pluginID {
+		t.Fatalf("state directory = %q", filepath.Dir(cfg.StatePath))
+	}
 }
 
 func TestDecodeConfigOverrides(t *testing.T) {
@@ -44,6 +47,9 @@ func TestDecodeConfigRejectsInvalidValues(t *testing.T) {
 
 func TestPluginRegistrationDeclaresRequiredCapabilities(t *testing.T) {
 	registration := pluginRegistration()
+	if registration.Metadata.Name != "Codex 调度控制" || registration.Metadata.Version == "" || registration.Metadata.Author == "" || registration.Metadata.GitHubRepository != "https://github.com/elunez/codex-limiter" {
+		t.Fatalf("metadata = %+v", registration.Metadata)
+	}
 	capabilities := registration.Capabilities
 	if !capabilities.Scheduler || !capabilities.ManagementAPI || !capabilities.RequestInterceptor || !capabilities.RequestLifecyclePlugin {
 		t.Fatalf("capabilities = %+v", capabilities)

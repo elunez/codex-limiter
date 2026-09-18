@@ -51,7 +51,7 @@ const statusPageHTML = `<!doctype html>
   </div><footer class="modal-foot"><button class="button text" type="button" data-close="account-layer">取消</button><button class="button primary" type="submit">保存账号设置</button></footer></form></div></div>
 <div class="notice" id="notice" hidden></div>
 <script>
-const API='/v0/management/plugins/codex-concurrency-limiter';
+const API='/v0/management/plugins/codex-limiter';
 const STORAGE_PREFIX_V1='enc::v1::',STORAGE_PREFIX_V2='enc::v2::',STORAGE_SALT='cli-proxy-api-webui::secure-storage';
 let managementKey='',lastData=null,currentAccount=null;
 const $=id=>document.getElementById(id);

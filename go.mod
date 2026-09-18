@@ -1,4 +1,4 @@
-module github.com/elunez/codex-concurrency-limiter
+module github.com/elunez/codex-limiter
 
 go 1.26.0
 
