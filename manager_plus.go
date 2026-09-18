@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -34,6 +35,8 @@ type managerPlusQueryResponse struct {
 		Windows []struct {
 			ProviderWindowID string   `json:"provider_window_id"`
 			WindowKind       string   `json:"window_kind"`
+			ModelScopeKind   string   `json:"model_scope_kind"`
+			ModelScopeKey    string   `json:"model_scope_key"`
 			UsedPercent      *float64 `json:"used_percent"`
 			CycleEndMS       *int64   `json:"cycle_end_ms"`
 			ObservedAtMS     int64    `json:"observed_at_ms"`
@@ -83,7 +86,7 @@ func fetchManagerPlusQuotas(host HostClient, auths []pluginapi.HostAuthFileEntry
 	payload, _ := json.Marshal(map[string]any{
 		"accounts":         accounts,
 		"now_ms":           now.UnixMilli(),
-		"include_inactive": false,
+		"include_inactive": true,
 	})
 	response, err := host.Do(pluginapi.HTTPRequest{
 		Method: http.MethodPost,
@@ -111,11 +114,15 @@ func fetchManagerPlusQuotas(host HostClient, auths []pluginapi.HostAuthFileEntry
 		snapshot := QuotaSnapshot{}
 		stale := false
 		for _, raw := range item.Windows {
-			if raw.Availability == "inactive" {
+			kind := managerPlusMainWindowKind(raw.ProviderWindowID, raw.WindowKind, raw.ModelScopeKind, raw.ModelScopeKey)
+			if kind == "" {
 				continue
 			}
 			if raw.Stale {
 				stale = true
+				continue
+			}
+			if raw.Availability == "inactive" || raw.Availability == "pending_absent" {
 				continue
 			}
 			if raw.UsedPercent == nil || *raw.UsedPercent < 0 || *raw.UsedPercent > 100 {
@@ -128,12 +135,10 @@ func fetchManagerPlusQuotas(host HostClient, auths []pluginapi.HostAuthFileEntry
 			if snapshot.PlanType == "" {
 				snapshot.PlanType = strings.ToLower(strings.TrimSpace(raw.PlanType))
 			}
-			kind := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(raw.WindowKind), "-", "_"))
-			providerID := strings.ToLower(strings.TrimSpace(raw.ProviderWindowID))
-			switch {
-			case providerID == "five-hour" || kind == "five_hour" || raw.DurationSeconds == fiveHourSecs:
+			switch kind {
+			case "five_hour":
 				snapshot.FiveHour = window
-			case providerID == "weekly" || kind == "weekly" || raw.DurationSeconds == weeklySecs:
+			case "weekly":
 				snapshot.Weekly = window
 			}
 		}
@@ -147,12 +152,90 @@ func fetchManagerPlusQuotas(host HostClient, auths []pluginapi.HostAuthFileEntry
 		}
 		results[item.RowKey] = snapshot
 	}
+	fillIncompleteManagerPlusQuotas(host, auths, now, results, errorsByID)
 	for _, auth := range auths {
 		if _, ok := results[auth.ID]; !ok && errorsByID[auth.ID] == "" {
 			errorsByID[auth.ID] = "CPA Manager Plus 未返回该账号额度"
 		}
 	}
 	return results, errorsByID
+}
+
+func fillIncompleteManagerPlusQuotas(host HostClient, auths []pluginapi.HostAuthFileEntry, now time.Time, results map[string]QuotaSnapshot, errorsByID map[string]string) {
+	type queryResult struct {
+		authID string
+		quota  QuotaSnapshot
+		err    error
+	}
+	queries := make(chan queryResult, len(auths))
+	semaphore := make(chan struct{}, 4)
+	var workers sync.WaitGroup
+	queryCount := 0
+	for _, auth := range auths {
+		if strings.TrimSpace(auth.AuthIndex) == "" {
+			continue
+		}
+		current := results[auth.ID]
+		if current.FiveHour.Present && current.Weekly.Present {
+			continue
+		}
+		queryCount++
+		auth := auth
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			semaphore <- struct{}{}
+			quota, err := fetchRealtimeQuota(host, auth, now)
+			<-semaphore
+			queries <- queryResult{authID: auth.ID, quota: quota, err: err}
+		}()
+	}
+	if queryCount == 0 {
+		return
+	}
+	workers.Wait()
+	close(queries)
+	for query := range queries {
+		if query.err == nil {
+			results[query.authID] = query.quota
+			delete(errorsByID, query.authID)
+			continue
+		}
+		if _, ok := results[query.authID]; !ok {
+			errorsByID[query.authID] = fmt.Sprintf("CPA Manager Plus 额度不完整，实时补全失败: %v", query.err)
+		}
+	}
+}
+
+func managerPlusMainWindowKind(providerWindowID, windowKind, modelScopeKind, modelScopeKey string) string {
+	providerID := strings.ToLower(strings.TrimSpace(providerWindowID))
+	kind := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(windowKind), "-", "_"))
+	scopeKind := strings.ToLower(strings.TrimSpace(modelScopeKind))
+	scopeKey := strings.ToLower(strings.TrimSpace(modelScopeKey))
+	if scopeKey != "" && scopeKey != "codex_main" {
+		return ""
+	}
+	if scopeKind != "" && scopeKind != "all" && scopeKind != "family" {
+		return ""
+	}
+	switch providerID {
+	case "five-hour", "five_hour", "rate_limit:five_hour":
+		return "five_hour"
+	case "weekly", "rate_limit:weekly":
+		return "weekly"
+	case "primary":
+		if kind == "five_hour" {
+			return "five_hour"
+		}
+	case "secondary":
+		if kind == "weekly" {
+			return "weekly"
+		}
+	}
+	if scopeKey == "codex_main" && (kind == "five_hour" || kind == "weekly") {
+		return kind
+	}
+	return ""
 }
 
 func managerPlusCredentialIdentity(raw json.RawMessage) (accountID, email string) {

@@ -10,11 +10,17 @@ import (
 
 type capturingHostClient struct {
 	fakeHostClient
-	request pluginapi.HTTPRequest
+	request  pluginapi.HTTPRequest
+	requests []pluginapi.HTTPRequest
+	do       func(pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error)
 }
 
 func (client *capturingHostClient) Do(request pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
 	client.request = request
+	client.requests = append(client.requests, request)
+	if client.do != nil {
+		return client.do(request)
+	}
 	return client.httpResult, client.httpErr
 }
 
@@ -63,9 +69,72 @@ func TestFetchManagerPlusQuotasUsesCompleteCodexIdentity(t *testing.T) {
 	if identity.AccountSnapshot != "member@example.com" || identity.AuthLabelSnapshot != auth.Label || identity.AuthFileSnapshot != auth.Name || identity.AuthProviderSnapshot != auth.Provider || identity.AuthAccountIDSnapshot != "workspace-a" || identity.AuthProjectIDSnapshot != "" || identity.AuthIndex != auth.AuthIndex || identity.Source != auth.Name {
 		t.Fatalf("identity = %+v", identity)
 	}
+	if len(host.requests) != 1 {
+		t.Fatalf("complete manager snapshot unexpectedly used realtime fallback: %+v", host.requests)
+	}
 
 	decision := evaluateQuota(quota, "", accountSettingsFromGlobal(settings), failureAllow, now)
 	if !decision.Blocked || decision.Unknown {
+		t.Fatalf("decision = %+v", decision)
+	}
+}
+
+func TestFetchManagerPlusQuotasFillsIncompleteSnapshotFromRealtime(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	expiredAt := now.Add(-time.Minute).UnixMilli()
+	weeklyReset := now.Add(5 * 24 * time.Hour).UnixMilli()
+	managerResponse := pluginapi.HTTPResponse{
+		StatusCode: 200,
+		Body: []byte(`{"items":[{"row_key":"auth-a","windows":[` +
+			`{"provider_window_id":"five-hour","window_kind":"five_hour","model_scope_kind":"family","model_scope_key":"codex_main","used_percent":86,"cycle_end_ms":` + jsonNumber(expiredAt) + `,"observed_at_ms":` + jsonNumber(now.Add(-time.Hour).UnixMilli()) + `,"duration_seconds":18000,"plan_type":"plus","stale":true,"availability":"active"},` +
+			`{"provider_window_id":"weekly","window_kind":"weekly","model_scope_kind":"family","model_scope_key":"codex_main","used_percent":0,"cycle_end_ms":` + jsonNumber(weeklyReset) + `,"observed_at_ms":` + jsonNumber(now.UnixMilli()) + `,"duration_seconds":604800,"plan_type":"plus","availability":"active"},` +
+			`{"provider_window_id":"code-review-five-hour","window_kind":"five_hour","model_scope_kind":"feature","model_scope_key":"code_review","used_percent":99,"observed_at_ms":` + jsonNumber(now.UnixMilli()) + `,"duration_seconds":18000,"availability":"active"}` +
+			`] }]}`),
+	}
+	realtimeResponse := pluginapi.HTTPResponse{
+		StatusCode: 200,
+		Body:       []byte(`{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":65,"limit_window_seconds":18000,"reset_after_seconds":10800},"secondary_window":{"used_percent":30,"limit_window_seconds":604800,"reset_after_seconds":518400}}}`),
+	}
+	host := &capturingHostClient{fakeHostClient: fakeHostClient{
+		authJSON: json.RawMessage(`{"access_token":"token-a","account_id":"account-a"}`),
+	}}
+	host.do = func(request pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+		if request.URL == codexUsageURL {
+			return realtimeResponse, nil
+		}
+		return managerResponse, nil
+	}
+	auth := pluginapi.HostAuthFileEntry{ID: "auth-a", AuthIndex: "index-a", Provider: "codex"}
+	settings := defaultSettings()
+	settings.QuotaSource = quotaSourceManagerPlus
+	settings.ManagerPlusBaseURL = "http://manager.example"
+	settings.ManagerPlusManagementKey = "secret"
+
+	quotas, errorsByID := fetchManagerPlusQuotas(host, []pluginapi.HostAuthFileEntry{auth}, settings, now)
+	if message := errorsByID[auth.ID]; message != "" {
+		t.Fatalf("query error = %q", message)
+	}
+	quota := quotas[auth.ID]
+	if !quota.FiveHour.Present || quota.FiveHour.UsedPercent != 65 {
+		t.Fatalf("five-hour quota = %+v", quota.FiveHour)
+	}
+	if !quota.Weekly.Present || quota.Weekly.UsedPercent != 30 {
+		t.Fatalf("weekly quota = %+v", quota.Weekly)
+	}
+	var payload struct {
+		IncludeInactive bool `json:"include_inactive"`
+	}
+	if len(host.requests) != 2 || host.requests[1].URL != codexUsageURL {
+		t.Fatalf("requests = %+v", host.requests)
+	}
+	if err := json.Unmarshal(host.requests[0].Body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.IncludeInactive {
+		t.Fatal("manager query did not request inactive lifecycle data")
+	}
+	decision := evaluateQuota(quota, "", accountSettingsFromGlobal(settings), failureAllow, now)
+	if decision.Unknown || decision.Blocked {
 		t.Fatalf("decision = %+v", decision)
 	}
 }
