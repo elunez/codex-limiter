@@ -54,4 +54,17 @@ func TestPluginRegistrationDeclaresRequiredCapabilities(t *testing.T) {
 	if !capabilities.Scheduler || !capabilities.ManagementAPI || !capabilities.RequestInterceptor || !capabilities.RequestLifecyclePlugin {
 		t.Fatalf("capabilities = %+v", capabilities)
 	}
+	if fields := registration.Metadata.ConfigFields; len(fields) != 2 || fields[0].Name != "quota_source" || fields[1].Name != "state_path" {
+		t.Fatalf("config fields = %+v", fields)
+	}
+}
+
+func TestNormalizeAccountSettingsDefaultsQueryFailurePolicy(t *testing.T) {
+	settings, err := normalizeAccountSettings(AccountSettings{MaxConcurrencyPerAccount: 3, QueueTimeoutSeconds: 300, FiveHour: WindowRule{Enabled: true, CutoffPercent: 95}, Weekly: WindowRule{Enabled: true, CutoffPercent: 95}, MatchPolicy: matchAny})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.QueryFailurePolicy != failureAllow {
+		t.Fatalf("query failure policy = %q", settings.QueryFailurePolicy)
+	}
 }

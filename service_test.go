@@ -50,6 +50,7 @@ func interceptRequest(requestID, authID string) pluginapi.RequestInterceptReques
 
 func TestServiceLimitsCodexAccountAndReleasesOnCompletion(t *testing.T) {
 	service := testService(true, 2, 0)
+	service.overrides["auth-a"] = AccountOverride{Settings: accountSettingsFromGlobal(service.settings)}
 	if service.InterceptAfterAuth(interceptRequest("request-1", "auth-a")).Terminate {
 		t.Fatal("first request terminated")
 	}
@@ -77,15 +78,18 @@ func TestServiceUsesAccountConcurrencyOverride(t *testing.T) {
 	}
 }
 
-func TestServiceIgnoresNonCodexAndDisabledPlugin(t *testing.T) {
+func TestServiceIgnoresNonCodexAndAccountWithoutControl(t *testing.T) {
 	service := testService(false, 1, 0)
+	service.overrides["auth-a"] = AccountOverride{Settings: accountSettingsFromGlobal(service.settings)}
 	if service.InterceptAfterAuth(interceptRequest("request-1", "auth-a")).Terminate {
 		t.Fatal("non-Codex request terminated")
 	}
 	service = testService(true, 1, 0)
-	service.settings.Enabled = false
 	if service.InterceptAfterAuth(interceptRequest("request-1", "auth-a")).Terminate {
-		t.Fatal("disabled plugin terminated request")
+		t.Fatal("uncontrolled account terminated first request")
+	}
+	if service.InterceptAfterAuth(interceptRequest("request-2", "auth-a")).Terminate {
+		t.Fatal("uncontrolled account was limited")
 	}
 }
 

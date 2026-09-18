@@ -12,24 +12,17 @@ import (
 const managementBasePath = "/plugins/" + pluginID
 
 type publicSettings struct {
-	Enabled                  bool       `json:"enabled"`
-	MaxConcurrencyPerAccount int        `json:"max_concurrency_per_account"`
-	QueueTimeoutSeconds      int        `json:"queue_timeout_seconds"`
-	QuotaSource              string     `json:"quota_source"`
-	ManagerPlusKeyConfigured bool       `json:"manager_plus_key_configured"`
-	FiveHour                 WindowRule `json:"five_hour"`
-	Weekly                   WindowRule `json:"weekly"`
-	MatchPolicy              string     `json:"match_policy"`
-	QueryFailurePolicy       string     `json:"query_failure_policy"`
+	QuotaSource string `json:"quota_source"`
 }
 
 type statusAccount struct {
 	AccountSnapshot
-	Concurrency limiterSnapshot `json:"concurrency"`
-	Limit       int             `json:"limit"`
-	Effective   AccountSettings `json:"effective_settings"`
-	Override    AccountOverride `json:"override"`
-	Decision    QuotaDecision   `json:"decision"`
+	ControlEnabled bool            `json:"control_enabled"`
+	Concurrency    limiterSnapshot `json:"concurrency"`
+	Limit          int             `json:"limit"`
+	Effective      AccountSettings `json:"effective_settings"`
+	Override       AccountOverride `json:"override"`
+	Decision       QuotaDecision   `json:"decision"`
 }
 
 type statusSummary struct {
@@ -55,8 +48,8 @@ func registerManagement() pluginapi.ManagementRegistrationResponse {
 		Resources: []pluginapi.ResourceRoute{{Path: "/status", Menu: "调度控制", Description: "Codex 账号并发与额度调度控制。"}},
 		Routes: []pluginapi.ManagementRoute{
 			{Method: http.MethodGet, Path: managementBasePath + "/status", Description: "读取账号调度状态。"},
-			{Method: http.MethodPut, Path: managementBasePath + "/settings", Description: "保存全局调度设置。"},
-			{Method: http.MethodPut, Path: managementBasePath + "/account", Description: "保存账号独立设置。"},
+			{Method: http.MethodPut, Path: managementBasePath + "/settings", Description: "保存额度数据源。"},
+			{Method: http.MethodPut, Path: managementBasePath + "/account", Description: "保存账号调度设置。"},
 			{Method: http.MethodPost, Path: managementBasePath + "/refresh", Description: "立即查询全部账号额度。"},
 		},
 	}
@@ -89,10 +82,14 @@ func handleManagement(raw []byte) ([]byte, error) {
 		}
 		return okEnvelope(jsonResponse(http.StatusOK, buildStatus(current, nil)))
 	case method == http.MethodPut && path == "/settings":
-		var settings GlobalSettings
-		if err := json.Unmarshal(request.Body, &settings); err != nil {
+		var payload struct {
+			QuotaSource string `json:"quota_source"`
+		}
+		if err := json.Unmarshal(request.Body, &payload); err != nil {
 			return okEnvelope(jsonResponse(http.StatusBadRequest, map[string]string{"error": "invalid JSON body"}))
 		}
+		settings, _, _ := current.Snapshot()
+		settings.QuotaSource = payload.QuotaSource
 		// 与 codex-keepalive 页面一致，复用管理中心“记住凭证”后随请求
 		// 携带的管理密钥，不要求用户在插件页面再次输入。
 		if settings.QuotaSource == quotaSourceManagerPlus {
@@ -157,15 +154,7 @@ func buildStatus(current *Service, refreshErr error) statusPayload {
 		Version:     pluginVersion,
 		GeneratedAt: now,
 		Settings: publicSettings{
-			Enabled:                  settings.Enabled,
-			MaxConcurrencyPerAccount: settings.MaxConcurrencyPerAccount,
-			QueueTimeoutSeconds:      settings.QueueTimeoutSeconds,
-			QuotaSource:              settings.QuotaSource,
-			ManagerPlusKeyConfigured: settings.ManagerPlusManagementKey != "",
-			FiveHour:                 settings.FiveHour,
-			Weekly:                   settings.Weekly,
-			MatchPolicy:              settings.MatchPolicy,
-			QueryFailurePolicy:       settings.QueryFailurePolicy,
+			QuotaSource: settings.QuotaSource,
 		},
 	}
 	if refreshErr != nil {
@@ -181,13 +170,20 @@ func buildStatus(current *Service, refreshErr error) statusPayload {
 		if custom && !override.UseGlobal {
 			effective = override.Settings
 		}
-		load := current.limiter.Snapshot(account.AuthID)
-		decision := current.accountDecision(account, effective, settings, now)
-		status := statusAccount{AccountSnapshot: account, Concurrency: load, Limit: effective.MaxConcurrencyPerAccount, Effective: effective, Override: override, Decision: decision}
+		controlEnabled := custom && !override.UseGlobal
+		load := limiterSnapshot{}
+		if controlEnabled {
+			load = current.limiter.Snapshot(account.AuthID)
+		}
+		decision := QuotaDecision{Reason: "未启用调度控制"}
+		if controlEnabled {
+			decision = current.accountDecision(account, effective, now)
+		}
+		status := statusAccount{AccountSnapshot: account, ControlEnabled: controlEnabled, Concurrency: load, Limit: effective.MaxConcurrencyPerAccount, Effective: effective, Override: override, Decision: decision}
 		result.Accounts = append(result.Accounts, status)
 		result.Summary.Active += load.Active
 		result.Summary.Queued += load.Queued
-		if decision.Blocked {
+		if controlEnabled && decision.Blocked {
 			result.Summary.Blocked++
 		} else if !account.Disabled && !account.Unavailable {
 			result.Summary.Schedulable++

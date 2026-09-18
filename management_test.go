@@ -15,7 +15,7 @@ func TestManagementRegistrationAndPage(t *testing.T) {
 	if len(registration.Resources) != 1 || registration.Resources[0].Menu != "调度控制" {
 		t.Fatalf("resources = %+v", registration.Resources)
 	}
-	for _, text := range []string{"Codex 调度控制", "额度查询失败时", "实时查询", "账号调度状态", "自动读取额度快照", "savedManagementKey", ">序号<", ">并发数<", ">排队数<", ">停止调度<", "5 条/页", "account-page-jump"} {
+	for _, text := range []string{"Codex 调度控制", "启用调度控制", "额度查询失败时", "实时查询", "账号调度状态", "自动读取额度快照", "savedManagementKey", ">序号<", ">并发数<", ">排队数<", ">停止调度<", "5 条/页", "account-page-jump"} {
 		if !strings.Contains(statusPageHTML, text) {
 			t.Fatalf("page missing %q", text)
 		}
@@ -23,10 +23,41 @@ func TestManagementRegistrationAndPage(t *testing.T) {
 	if strings.Contains(statusPageHTML, "CPA Manager Plus 已连接") {
 		t.Fatal("realtime page contains connection banner")
 	}
-	for _, removed := range []string{`id="g-manager-key"`, `id="g-manager-url"`, "额度已停止"} {
+	for _, removed := range []string{`id="g-manager-key"`, `id="g-manager-url"`, `id="g-enabled"`, `id="g-limit"`, `id="g-timeout"`, `id="g-five-enabled"`, `id="g-week-enabled"`, `id="g-match"`, `id="g-failure"`, "使用独立设置", "额度已停止"} {
 		if strings.Contains(statusPageHTML, removed) {
 			t.Fatalf("page still contains removed UI %q", removed)
 		}
+	}
+}
+
+func TestSaveQuotaSourcePreservesLegacyDefaults(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.StatePath = filepath.Join(t.TempDir(), "state.json")
+	target, err := NewService(cfg, &fakeHostClient{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceMu.Lock()
+	previous := service
+	service = target
+	serviceMu.Unlock()
+	defer func() {
+		serviceMu.Lock()
+		service = previous
+		serviceMu.Unlock()
+		target.Stop()
+	}()
+
+	raw, err := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodPut, Path: "/v0/management" + managementBasePath + "/settings", Body: json.RawMessage(`{"quota_source":"realtime"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handleManagement(raw); err != nil {
+		t.Fatal(err)
+	}
+	saved, _, _ := target.Snapshot()
+	if saved.MaxConcurrencyPerAccount != 3 || saved.QueueTimeoutSeconds != 300 || saved.FiveHour.CutoffPercent != 95 || saved.QueryFailurePolicy != failureAllow {
+		t.Fatalf("legacy defaults changed: %+v", saved)
 	}
 }
 

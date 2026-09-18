@@ -49,6 +49,7 @@ type AccountSettings struct {
 	FiveHour                 WindowRule `json:"five_hour"`
 	Weekly                   WindowRule `json:"weekly"`
 	MatchPolicy              string     `json:"match_policy"`
+	QueryFailurePolicy       string     `json:"query_failure_policy"`
 }
 
 type AccountOverride struct {
@@ -207,6 +208,13 @@ func normalizeAccountSettings(settings AccountSettings) (AccountSettings, error)
 		return settings, err
 	}
 	settings.MatchPolicy = strings.ToLower(strings.TrimSpace(settings.MatchPolicy))
+	settings.QueryFailurePolicy = strings.ToLower(strings.TrimSpace(settings.QueryFailurePolicy))
+	if settings.QueryFailurePolicy == "" {
+		settings.QueryFailurePolicy = failureAllow
+	}
+	if settings.QueryFailurePolicy != failureAllow && settings.QueryFailurePolicy != failureDeny {
+		return settings, fmt.Errorf("query_failure_policy must be allow or deny")
+	}
 	return settings, nil
 }
 
@@ -233,6 +241,7 @@ func accountSettingsFromGlobal(settings GlobalSettings) AccountSettings {
 		FiveHour:                 settings.FiveHour,
 		Weekly:                   settings.Weekly,
 		MatchPolicy:              settings.MatchPolicy,
+		QueryFailurePolicy:       settings.QueryFailurePolicy,
 	}
 }
 
@@ -285,10 +294,7 @@ func pluginRegistration() registration {
 			GitHubRepository: "https://github.com/elunez/codex-limiter",
 			Logo:             "https://raw.githubusercontent.com/router-for-me/CLIProxyAPI/main/docs/logo.png",
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "max_concurrency_per_account", Type: pluginapi.ConfigFieldTypeInteger, Description: "默认单账号最大并发数，范围 1～64。"},
-				{Name: "queue_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "并发已满时等待空位的秒数，范围 0～86400。"},
 				{Name: "quota_source", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{quotaSourceRealtime, quotaSourceManagerPlus}, Description: "额度来源，默认实时查询。"},
-				{Name: "query_failure_policy", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{failureAllow, failureDeny}, Description: "额度查询失败时继续或暂停调度。"},
 				{Name: "state_path", Type: pluginapi.ConfigFieldTypeString, Description: "页面设置和账号覆盖规则的状态文件。"},
 			},
 		},

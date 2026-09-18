@@ -149,8 +149,7 @@ func (s *Service) InterceptAfterAuth(request pluginapi.RequestInterceptRequest) 
 		return pluginapi.RequestInterceptResponse{}
 	}
 	s.mu.RLock()
-	enabled := s.settings.Enabled
-	effective := s.effectiveSettingsLocked(authID)
+	enabled, effective := s.accountControlLocked(authID)
 	s.mu.RUnlock()
 	if !enabled {
 		return pluginapi.RequestInterceptResponse{}
@@ -173,6 +172,16 @@ func (s *Service) effectiveSettingsLocked(authID string) AccountSettings {
 		return override.Settings
 	}
 	return accountSettingsFromGlobal(s.settings)
+}
+
+// accountControlLocked 返回账号是否启用了调度控制及其有效规则。
+// 未启用的账号仍由宿主正常调度，不受本插件的并发和额度限制。
+func (s *Service) accountControlLocked(authID string) (bool, AccountSettings) {
+	override, ok := s.overrides[authID]
+	if !ok || override.UseGlobal {
+		return false, accountSettingsFromGlobal(s.settings)
+	}
+	return true, override.Settings
 }
 
 func (s *Service) EffectiveSettings(authID string) AccountSettings {
@@ -403,11 +412,11 @@ func limitErrorResponse(err error) pluginapi.RequestInterceptResponse {
 	}
 }
 
-func (s *Service) accountDecision(account AccountSnapshot, effective AccountSettings, settings GlobalSettings, now time.Time) QuotaDecision {
+func (s *Service) accountDecision(account AccountSnapshot, effective AccountSettings, now time.Time) QuotaDecision {
 	if account.Disabled || account.Unavailable {
 		return QuotaDecision{Blocked: true, Reason: "账号当前不可用"}
 	}
-	return evaluateQuota(account.Quota, account.LastError, effective, settings.QueryFailurePolicy, now)
+	return evaluateQuota(account.Quota, account.LastError, effective, effective.QueryFailurePolicy, now)
 }
 
 func (s *Service) requireAccount(authID string) error {

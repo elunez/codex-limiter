@@ -11,57 +11,59 @@ import (
 )
 
 type schedulableCandidate struct {
-	candidate pluginapi.SchedulerAuthCandidate
-	active    int
-	queued    int
-	limit     int
+	candidate  pluginapi.SchedulerAuthCandidate
+	controlled bool
+	active     int
+	queued     int
+	limit      int
 }
 
 func (s *Service) Pick(request pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
 	if !requestContainsCodex(request) {
 		return pluginapi.SchedulerPickResponse{Handled: false}, nil
 	}
+	controlledIDs := make(map[string]struct{})
 	s.mu.RLock()
-	enabled := s.settings.Enabled
-	failurePolicy := s.settings.QueryFailurePolicy
-	s.mu.RUnlock()
-	if !enabled {
-		return pluginapi.SchedulerPickResponse{Handled: false}, nil
-	}
-	ids := make(map[string]struct{})
 	for _, candidate := range request.Candidates {
 		if strings.EqualFold(candidate.Provider, "codex") {
-			ids[candidate.ID] = struct{}{}
+			if enabled, _ := s.accountControlLocked(candidate.ID); enabled {
+				controlledIDs[candidate.ID] = struct{}{}
+			}
 		}
 	}
-	if len(ids) == 0 {
+	s.mu.RUnlock()
+	if len(controlledIDs) == 0 {
 		return pluginapi.SchedulerPickResponse{Handled: false}, nil
 	}
-	if err := s.RefreshAccounts(ids); err != nil && failurePolicy == failureDeny {
-		return pluginapi.SchedulerPickResponse{}, fmt.Errorf("实时额度查询失败: %w", err)
-	}
+	refreshErr := s.RefreshAccounts(controlledIDs)
 
 	now := time.Now()
-	allowed := make([]schedulableCandidate, 0, len(ids))
+	allowed := make([]schedulableCandidate, 0, len(request.Candidates))
 	blockedReasons := make([]string, 0)
 	s.mu.RLock()
-	settings := s.settings
 	for _, candidate := range request.Candidates {
 		if !strings.EqualFold(candidate.Provider, "codex") {
 			continue
 		}
-		effective := s.effectiveSettingsLocked(candidate.ID)
+		controlled, effective := s.accountControlLocked(candidate.ID)
+		if !controlled {
+			allowed = append(allowed, schedulableCandidate{candidate: candidate})
+			continue
+		}
 		account, ok := s.accounts[candidate.ID]
 		if !ok {
 			account = AccountSnapshot{AuthID: candidate.ID, LastError: "尚未取得账号额度"}
 		}
-		decision := s.accountDecision(account, effective, settings, now)
+		if refreshErr != nil {
+			account.LastError = refreshErr.Error()
+		}
+		decision := s.accountDecision(account, effective, now)
 		if decision.Blocked {
 			blockedReasons = append(blockedReasons, candidate.ID+": "+decision.Reason)
 			continue
 		}
 		load := s.limiter.Snapshot(candidate.ID)
-		allowed = append(allowed, schedulableCandidate{candidate: candidate, active: load.Active, queued: load.Queued, limit: effective.MaxConcurrencyPerAccount})
+		allowed = append(allowed, schedulableCandidate{candidate: candidate, controlled: true, active: load.Active, queued: load.Queued, limit: effective.MaxConcurrencyPerAccount})
 	}
 	s.mu.RUnlock()
 	if len(allowed) == 0 {
@@ -78,7 +80,7 @@ func (s *Service) Pick(request pluginapi.SchedulerPickRequest) (pluginapi.Schedu
 	pool := allowed
 	withCapacity := make([]schedulableCandidate, 0, len(allowed))
 	for _, item := range allowed {
-		if item.active < item.limit {
+		if !item.controlled || item.active < item.limit {
 			withCapacity = append(withCapacity, item)
 		}
 	}
