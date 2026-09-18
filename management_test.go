@@ -112,6 +112,62 @@ func TestSaveManagerPlusSettingsUsesCurrentManagementCredential(t *testing.T) {
 	}
 }
 
+func TestStatusRefreshesManagerPlusCredentialFromPageContext(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.StatePath = filepath.Join(t.TempDir(), "state.json")
+	host := &capturingHostClient{fakeHostClient: fakeHostClient{
+		entries: []pluginapi.HostAuthFileEntry{{ID: "auth-a", AuthIndex: "index-a", Provider: "codex"}},
+		httpResult: pluginapi.HTTPResponse{
+			StatusCode: http.StatusOK,
+			Body:       []byte(`{"items":[]}`),
+		},
+	}}
+	target, err := NewService(cfg, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := defaultSettings()
+	settings.QuotaSource = quotaSourceManagerPlus
+	settings.ManagerPlusBaseURL = "http://old-manager.example"
+	settings.ManagerPlusManagementKey = "old-key"
+	if err := target.SaveGlobalSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	serviceMu.Lock()
+	previous := service
+	service = target
+	serviceMu.Unlock()
+	defer func() {
+		serviceMu.Lock()
+		service = previous
+		serviceMu.Unlock()
+		target.Stop()
+	}()
+
+	raw, err := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodGet,
+		Path:   "/v0/management" + managementBasePath + "/status",
+		Headers: http.Header{
+			"Authorization":         []string{"Bearer cpa-management-key"},
+			managerPlusKeyHeader:    []string{"manager-admin-key"},
+			managerPlusOriginHeader: []string{"http://manager.example"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handleManagement(raw); err != nil {
+		t.Fatal(err)
+	}
+	saved, _, _ := target.Snapshot()
+	if saved.ManagerPlusBaseURL != "http://manager.example" || saved.ManagerPlusManagementKey != "manager-admin-key" {
+		t.Fatalf("manager context was not synchronized: %+v", saved)
+	}
+	if host.request.URL != "http://manager.example/v0/management/quota-snapshots/query" || host.request.Headers.Get("Authorization") != "Bearer manager-admin-key" {
+		t.Fatalf("quota request used stale manager context: %+v", host.request)
+	}
+}
+
 func TestSaveSettingsAndAccountOverride(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.StatePath = filepath.Join(t.TempDir(), "state.json")

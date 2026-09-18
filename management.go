@@ -79,9 +79,15 @@ func handleManagement(raw []byte) ([]byte, error) {
 	}
 	switch {
 	case method == http.MethodGet && path == "/status":
-		refreshErr := current.RefreshAccounts(nil)
+		refreshErr := syncManagerPlusConnection(current, request.Headers)
+		if refreshErr == nil {
+			refreshErr = current.RefreshAccounts(nil)
+		}
 		return okEnvelope(jsonResponse(http.StatusOK, buildStatus(current, refreshErr)))
 	case method == http.MethodPost && path == "/refresh":
+		if err := syncManagerPlusConnection(current, request.Headers); err != nil {
+			return okEnvelope(jsonResponse(http.StatusBadGateway, map[string]string{"error": err.Error()}))
+		}
 		if err := current.RefreshAccounts(nil); err != nil {
 			return okEnvelope(jsonResponse(http.StatusBadGateway, map[string]string{"error": err.Error()}))
 		}
@@ -127,41 +133,26 @@ func handleManagement(raw []byte) ([]byte, error) {
 }
 
 func managerPlusManagementKey(headers http.Header) string {
-	if value := strings.TrimSpace(headers.Get(managerPlusKeyHeader)); value != "" {
-		return value
-	}
-	return managementBearerToken(headers)
+	return strings.TrimSpace(headers.Get(managerPlusKeyHeader))
 }
 
 func managerPlusOrigin(headers http.Header) string {
-	if value := normalizeHTTPOrigin(headers.Get(managerPlusOriginHeader)); value != "" {
-		return value
-	}
-	return managementOrigin(headers)
+	return normalizeHTTPOrigin(headers.Get(managerPlusOriginHeader))
 }
 
-func managementBearerToken(headers http.Header) string {
-	value := strings.TrimSpace(headers.Get("Authorization"))
-	scheme, token, ok := strings.Cut(value, " ")
-	if !ok || !strings.EqualFold(strings.TrimSpace(scheme), "Bearer") {
-		return ""
+func syncManagerPlusConnection(current *Service, headers http.Header) error {
+	settings, _, _ := current.Snapshot()
+	if settings.QuotaSource != quotaSourceManagerPlus {
+		return nil
 	}
-	return strings.TrimSpace(token)
-}
-
-func managementOrigin(headers http.Header) string {
-	if value := normalizeHTTPOrigin(headers.Get("Origin")); value != "" {
-		return value
+	baseURL := managerPlusOrigin(headers)
+	key := managerPlusManagementKey(headers)
+	if baseURL == "" || key == "" || (settings.ManagerPlusBaseURL == baseURL && settings.ManagerPlusManagementKey == key) {
+		return nil
 	}
-	value := strings.TrimSpace(headers.Get("Referer"))
-	if value == "" {
-		return ""
-	}
-	request, err := http.NewRequest(http.MethodGet, value, nil)
-	if err != nil || request.URL.Host == "" || (request.URL.Scheme != "http" && request.URL.Scheme != "https") {
-		return ""
-	}
-	return request.URL.Scheme + "://" + request.URL.Host
+	settings.ManagerPlusBaseURL = baseURL
+	settings.ManagerPlusManagementKey = key
+	return current.SaveGlobalSettings(settings)
 }
 
 func normalizeHTTPOrigin(value string) string {
