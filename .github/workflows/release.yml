@@ -1,28 +1,77 @@
-name: 打包发布
+name: 测试、打包并发布
 
 on:
   push:
     branches:
       - main
+    tags:
+      - "v*.*.*"
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: release-main
+  group: ${{ github.workflow }}-release
   cancel-in-progress: false
 
-jobs:
-  release:
-    name: 测试、打包并发布
-    runs-on: macos-15
+env:
+  PLUGIN_ID: codex-concurrency-limiter
 
+jobs:
+  metadata:
+    name: 计算发布版本
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: 计算版本号
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            tag="$GITHUB_REF_NAME"
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "发布标签必须采用 v<major>.<minor>.<patch> 格式：$tag" >&2
+              exit 1
+            fi
+          else
+            latest="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -n 1)"
+            if [[ -z "$latest" ]]; then
+              major=0
+              minor=0
+              patch=1
+            else
+              IFS=. read -r major minor patch <<< "${latest#v}"
+              patch=$((patch + 1))
+              if ((patch >= 10)); then
+                patch=0
+                minor=$((minor + 1))
+              fi
+              if ((minor >= 10)); then
+                minor=0
+                major=$((major + 1))
+              fi
+            fi
+            tag="v${major}.${minor}.${patch}"
+          fi
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: 测试
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
 
       - name: 安装 Go
         uses: actions/setup-go@v7
@@ -30,47 +79,113 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: 计算版本号
-        id: version
-        shell: bash
-        run: |
-          latest="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -n 1)"
-          if [[ -z "$latest" ]]; then
-            major=0
-            minor=0
-            patch=1
-          else
-            IFS=. read -r major minor patch <<< "${latest#v}"
-            patch=$((patch + 1))
-            if ((patch >= 10)); then
-              patch=0
-              minor=$((minor + 1))
-            fi
-            if ((minor >= 10)); then
-              minor=0
-              major=$((major + 1))
-            fi
-          fi
-
-          tag="v${major}.${minor}.${patch}"
-          version="${tag#v}"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-
-      - name: 运行测试
+      - name: 运行测试与静态检查
         run: make test vet
 
-      - name: 打包 macOS ARM64 插件
-        run: make package VERSION="${{ steps.version.outputs.version }}" GOOS=darwin GOARCH=arm64
+      - name: 校验插件商店清单
+        run: |
+          jq -e '
+            .schema_version == 1 and
+            (.plugins | length == 1) and
+            (.plugins[0].id == "codex-concurrency-limiter") and
+            (.plugins[0].repository == "https://github.com/elunez/codex-limiter")
+          ' registry.json >/dev/null
 
-      - name: 创建 GitHub Release
+  build:
+    name: 打包 ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs:
+      - metadata
+      - test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            runner: ubuntu-24.04
+          - goos: linux
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+          - goos: darwin
+            goarch: amd64
+            runner: macos-15-intel
+          - goos: darwin
+            goarch: arm64
+            runner: macos-15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 安装 Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: 设置包名
+        run: |
+          version="${{ needs.metadata.outputs.version }}"
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+          echo "ARCHIVE=${PLUGIN_ID}_${version}_${{ matrix.goos }}_${{ matrix.goarch }}.zip" >> "$GITHUB_ENV"
+
+      - name: 构建并打包
+        run: make package VERSION="$VERSION" GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}"
+
+      - name: 校验压缩包结构
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.goos }}" == "darwin" ]]; then
+            extension=dylib
+          else
+            extension=so
+          fi
+          test "$(unzip -Z1 "dist/$ARCHIVE" | tr -d '\r')" = "$PLUGIN_ID.$extension"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE }}
+          path: |
+            dist/${{ env.ARCHIVE }}
+            dist/${{ env.ARCHIVE }}.sha256
+          if-no-files-found: error
+
+  release:
+    name: 发布
+    needs:
+      - metadata
+      - build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: 下载构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 生成统一校验文件
+        run: sort dist/*.sha256 > dist/checksums.txt
+
+      - name: 创建或更新 GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-          VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
         run: |
-          archive="dist/codex-concurrency-limiter_${VERSION}_darwin_arm64.zip"
-          gh release create "$TAG" "$archive" "${archive}.sha256" \
-            --target "$GITHUB_SHA" \
-            --title "$TAG" \
-            --generate-notes
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/*.zip dist/checksums.txt \
+              --clobber \
+              --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$RELEASE_TAG" dist/*.zip dist/checksums.txt \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_TAG" \
+              --generate-notes
+          fi
