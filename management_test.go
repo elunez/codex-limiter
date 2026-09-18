@@ -15,7 +15,7 @@ func TestManagementRegistrationAndPage(t *testing.T) {
 	if len(registration.Resources) != 1 || registration.Resources[0].Menu != "调度控制" {
 		t.Fatalf("resources = %+v", registration.Resources)
 	}
-	for _, text := range []string{"Codex 调度控制", "启用调度控制", "额度查询失败时", "实时查询", "账号调度状态", "自动读取额度快照", "savedManagementKey", ">序号<", ">并发数<", ">排队数<", ">停止调度<", "5 条/页", "account-page-jump"} {
+	for _, text := range []string{"Codex 调度控制", "启用调度控制", "额度查询失败时", "实时查询", "账号调度状态", "自动读取额度快照", "savedManagementKey", "plugin-version", managerPlusOriginHeader, managerPlusKeyHeader, ">序号<", ">并发数<", ">排队数<", ">停止调度<", "5 条/页", "account-page-jump"} {
 		if !strings.Contains(statusPageHTML, text) {
 			t.Fatalf("page missing %q", text)
 		}
@@ -87,10 +87,15 @@ func TestSaveManagerPlusSettingsUsesCurrentManagementCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, err := json.Marshal(pluginapi.ManagementRequest{
-		Method:  http.MethodPut,
-		Path:    "/v0/management" + managementBasePath + "/settings",
-		Headers: http.Header{"Authorization": []string{"Bearer remembered-secret"}, "Origin": []string{"http://127.0.0.1:8318"}},
-		Body:    body,
+		Method: http.MethodPut,
+		Path:   "/v0/management" + managementBasePath + "/settings",
+		Headers: http.Header{
+			"Authorization":         []string{"Bearer cpa-management-key"},
+			"Origin":                []string{"http://127.0.0.1:8317"},
+			managerPlusKeyHeader:    []string{"manager-admin-key"},
+			managerPlusOriginHeader: []string{"http://127.0.0.1:8318"},
+		},
+		Body: body,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +104,7 @@ func TestSaveManagerPlusSettingsUsesCurrentManagementCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	saved, _, _ := target.Snapshot()
-	if saved.ManagerPlusManagementKey != "remembered-secret" {
+	if saved.ManagerPlusManagementKey != "manager-admin-key" {
 		t.Fatalf("management credential was not reused: %q", saved.ManagerPlusManagementKey)
 	}
 	if saved.ManagerPlusBaseURL != "http://127.0.0.1:8318" {

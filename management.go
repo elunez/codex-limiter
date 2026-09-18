@@ -11,6 +11,11 @@ import (
 
 const managementBasePath = "/plugins/" + pluginID
 
+const (
+	managerPlusOriginHeader = "X-Codex-Limiter-Manager-Origin"
+	managerPlusKeyHeader    = "X-Codex-Limiter-Manager-Key"
+)
+
 type publicSettings struct {
 	QuotaSource string `json:"quota_source"`
 }
@@ -93,10 +98,10 @@ func handleManagement(raw []byte) ([]byte, error) {
 		// 与 codex-keepalive 页面一致，复用管理中心“记住凭证”后随请求
 		// 携带的管理密钥，不要求用户在插件页面再次输入。
 		if settings.QuotaSource == quotaSourceManagerPlus {
-			if baseURL := managementOrigin(request.Headers); baseURL != "" {
+			if baseURL := managerPlusOrigin(request.Headers); baseURL != "" {
 				settings.ManagerPlusBaseURL = baseURL
 			}
-			if key := managementBearerToken(request.Headers); key != "" {
+			if key := managerPlusManagementKey(request.Headers); key != "" {
 				settings.ManagerPlusManagementKey = key
 			}
 		}
@@ -121,6 +126,20 @@ func handleManagement(raw []byte) ([]byte, error) {
 	}
 }
 
+func managerPlusManagementKey(headers http.Header) string {
+	if value := strings.TrimSpace(headers.Get(managerPlusKeyHeader)); value != "" {
+		return value
+	}
+	return managementBearerToken(headers)
+}
+
+func managerPlusOrigin(headers http.Header) string {
+	if value := normalizeHTTPOrigin(headers.Get(managerPlusOriginHeader)); value != "" {
+		return value
+	}
+	return managementOrigin(headers)
+}
+
 func managementBearerToken(headers http.Header) string {
 	value := strings.TrimSpace(headers.Get("Authorization"))
 	scheme, token, ok := strings.Cut(value, " ")
@@ -131,16 +150,24 @@ func managementBearerToken(headers http.Header) string {
 }
 
 func managementOrigin(headers http.Header) string {
-	value := strings.TrimRight(strings.TrimSpace(headers.Get("Origin")), "/")
-	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+	if value := normalizeHTTPOrigin(headers.Get("Origin")); value != "" {
 		return value
 	}
-	value = strings.TrimSpace(headers.Get("Referer"))
+	value := strings.TrimSpace(headers.Get("Referer"))
 	if value == "" {
 		return ""
 	}
 	request, err := http.NewRequest(http.MethodGet, value, nil)
 	if err != nil || request.URL.Host == "" || (request.URL.Scheme != "http" && request.URL.Scheme != "https") {
+		return ""
+	}
+	return request.URL.Scheme + "://" + request.URL.Host
+}
+
+func normalizeHTTPOrigin(value string) string {
+	value = strings.TrimRight(strings.TrimSpace(value), "/")
+	request, err := http.NewRequest(http.MethodGet, value, nil)
+	if err != nil || request.URL.Host == "" || (request.URL.Scheme != "http" && request.URL.Scheme != "https") || request.URL.Path != "" {
 		return ""
 	}
 	return request.URL.Scheme + "://" + request.URL.Host
