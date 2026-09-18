@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -51,8 +53,15 @@ func TestPluginRegistrationDeclaresRequiredCapabilities(t *testing.T) {
 		t.Fatalf("metadata = %+v", registration.Metadata)
 	}
 	capabilities := registration.Capabilities
-	if !capabilities.Scheduler || !capabilities.ManagementAPI || !capabilities.RequestInterceptor || !capabilities.RequestLifecyclePlugin {
+	if !capabilities.Scheduler || !capabilities.SchedulerAcrossPriorities || !capabilities.ManagementAPI || !capabilities.RequestInterceptor || !capabilities.RequestLifecyclePlugin {
 		t.Fatalf("capabilities = %+v", capabilities)
+	}
+	encoded, err := json.Marshal(registration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"scheduler_across_priorities":true`) {
+		t.Fatalf("registration = %s", encoded)
 	}
 	if fields := registration.Metadata.ConfigFields; len(fields) != 2 || fields[0].Name != "quota_source" || fields[1].Name != "state_path" {
 		t.Fatalf("config fields = %+v", fields)

@@ -14,7 +14,7 @@ CLIProxyAPI 的 Codex 账号并发与额度调度插件。插件在调度阶段�
 - 同一个请求的上游重试不会重复计算并发；重试切换账号时占位会随之迁移。
 - 提供 CLIProxyAPI 管理页面，显示并发、排队、额度与停止原因。
 
-需要 CLIProxyAPI `v7.2.142` 或更高版本。该插件同时声明 Scheduler、Management API、Request Interceptor 和 Request Lifecycle 能力；请停用其他会接管 Codex Scheduler 的插件，避免调度冲突。
+需要 CLIProxyAPI `v7.3.7` 或更高版本。插件会接收所有优先级的候选账号：高优先级账号并发已满或额度达到阈值时，请求会自动切换到下一个仍可调度的账号。该插件同时声明 Scheduler、Management API、Request Interceptor 和 Request Lifecycle 能力；请停用其他会接管 Codex Scheduler 的插件，避免调度冲突。
 
 ## 配置
 
@@ -47,7 +47,7 @@ make package VERSION=0.0.3
 
 ### 从插件商店安装
 
-CLIProxyAPI 建议使用 `v7.2.142` 或更高版本。首次使用本仓库商店源时，在 `config.yaml` 的现有 `plugins` 节点中加入：
+CLIProxyAPI 需要使用 `v7.3.7` 或更高版本。首次使用本仓库商店源时，在 `config.yaml` 的现有 `plugins` 节点中加入：
 
 ```yaml
 plugins:

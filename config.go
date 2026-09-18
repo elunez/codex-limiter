@@ -278,10 +278,11 @@ type registration struct {
 }
 
 type registrationCapabilities struct {
-	Scheduler              bool `json:"scheduler"`
-	ManagementAPI          bool `json:"management_api"`
-	RequestInterceptor     bool `json:"request_interceptor"`
-	RequestLifecyclePlugin bool `json:"request_lifecycle_plugin"`
+	Scheduler                 bool `json:"scheduler"`
+	SchedulerAcrossPriorities bool `json:"scheduler_across_priorities,omitempty"`
+	ManagementAPI             bool `json:"management_api"`
+	RequestInterceptor        bool `json:"request_interceptor"`
+	RequestLifecyclePlugin    bool `json:"request_lifecycle_plugin"`
 }
 
 func pluginRegistration() registration {
@@ -298,6 +299,6 @@ func pluginRegistration() registration {
 				{Name: "state_path", Type: pluginapi.ConfigFieldTypeString, Description: "页面设置和账号覆盖规则的状态文件。"},
 			},
 		},
-		Capabilities: registrationCapabilities{Scheduler: true, ManagementAPI: true, RequestInterceptor: true, RequestLifecyclePlugin: true},
+		Capabilities: registrationCapabilities{Scheduler: true, SchedulerAcrossPriorities: true, ManagementAPI: true, RequestInterceptor: true, RequestLifecyclePlugin: true},
 	}
 }
