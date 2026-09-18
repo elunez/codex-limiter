@@ -1,0 +1,76 @@
+name: 打包发布
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: 测试、打包并发布
+    runs-on: macos-15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: 安装 Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: 计算版本号
+        id: version
+        shell: bash
+        run: |
+          latest="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -n 1)"
+          if [[ -z "$latest" ]]; then
+            major=0
+            minor=0
+            patch=1
+          else
+            IFS=. read -r major minor patch <<< "${latest#v}"
+            patch=$((patch + 1))
+            if ((patch >= 10)); then
+              patch=0
+              minor=$((minor + 1))
+            fi
+            if ((minor >= 10)); then
+              minor=0
+              major=$((major + 1))
+            fi
+          fi
+
+          tag="v${major}.${minor}.${patch}"
+          version="${tag#v}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: 运行测试
+        run: make test vet
+
+      - name: 打包 macOS ARM64 插件
+        run: make package VERSION="${{ steps.version.outputs.version }}" GOOS=darwin GOARCH=arm64
+
+      - name: 创建 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          archive="dist/codex-concurrency-limiter_${VERSION}_darwin_arm64.zip"
+          gh release create "$TAG" "$archive" "${archive}.sha256" \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
+            --generate-notes
