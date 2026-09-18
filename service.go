@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -95,25 +96,29 @@ type AccountSnapshot struct {
 }
 
 type Service struct {
-	mu          sync.RWMutex
-	cfg         Config
-	settings    GlobalSettings
-	overrides   map[string]AccountOverride
-	accounts    map[string]AccountSnapshot
-	host        HostClient
-	limiter     *accountLimiter
-	classifier  authClassifier
-	rr          map[string]uint64
-	affinity    map[string]sessionBinding
-	affinityGC  time.Time
-	refreshMu   sync.Mutex
-	refreshStop chan struct{}
-	refreshDone chan struct{}
-	refreshOnce sync.Once
-	stopOnce    sync.Once
+	mu                  sync.RWMutex
+	cfg                 Config
+	settings            GlobalSettings
+	overrides           map[string]AccountOverride
+	accounts            map[string]AccountSnapshot
+	host                HostClient
+	limiter             *accountLimiter
+	classifier          authClassifier
+	rr                  map[string]uint64
+	affinity            map[string]sessionBinding
+	affinityGC          time.Time
+	refreshMu           sync.Mutex
+	refreshStop         chan struct{}
+	refreshDone         chan struct{}
+	refreshWake         chan struct{}
+	refreshOnce         sync.Once
+	stopOnce            sync.Once
+	lastActivity        atomic.Int64
+	managerPlusFallback *managerPlusRealtimeFallbackCache
 }
 
 const quotaRefreshInterval = 30 * time.Second
+const quotaRefreshIdleTimeout = 30 * time.Minute
 
 func NewService(cfg Config, host HostClient) (*Service, error) {
 	state, err := loadState(cfg.StatePath, cfg.Defaults)
@@ -121,15 +126,16 @@ func NewService(cfg Config, host HostClient) (*Service, error) {
 		return nil, err
 	}
 	return &Service{
-		cfg:        cfg,
-		settings:   state.Settings,
-		overrides:  state.Overrides,
-		accounts:   make(map[string]AccountSnapshot),
-		host:       host,
-		limiter:    newAccountLimiter(state.Settings.MaxConcurrencyPerAccount),
-		classifier: newHostAuthClassifier(host),
-		rr:         make(map[string]uint64),
-		affinity:   make(map[string]sessionBinding),
+		cfg:                 cfg,
+		settings:            state.Settings,
+		overrides:           state.Overrides,
+		accounts:            make(map[string]AccountSnapshot),
+		host:                host,
+		limiter:             newAccountLimiter(state.Settings.MaxConcurrencyPerAccount),
+		classifier:          newHostAuthClassifier(host),
+		rr:                  make(map[string]uint64),
+		affinity:            make(map[string]sessionBinding),
+		managerPlusFallback: newManagerPlusRealtimeFallbackCache(),
 	}, nil
 }
 
@@ -148,8 +154,10 @@ func (s *Service) StartQuotaRefresh() {
 		return
 	}
 	s.refreshOnce.Do(func() {
+		s.lastActivity.Store(time.Now().UnixNano())
 		s.refreshStop = make(chan struct{})
 		s.refreshDone = make(chan struct{})
+		s.refreshWake = make(chan struct{}, 1)
 		go s.quotaRefreshLoop()
 	})
 }
@@ -158,16 +166,61 @@ func (s *Service) quotaRefreshLoop() {
 	defer close(s.refreshDone)
 	// 插件注册后先刷新一次，后续按固定周期更新。
 	_ = s.RefreshAccounts(nil)
-	ticker := time.NewTicker(quotaRefreshInterval)
-	defer ticker.Stop()
 	for {
+		if s.quotaRefreshIdle(time.Now()) {
+			select {
+			case <-s.refreshWake:
+				// 新请求只唤醒后台任务，查询仍在后台执行。
+				_ = s.RefreshAccounts(nil)
+				continue
+			case <-s.refreshStop:
+				return
+			}
+		}
+		timer := time.NewTimer(quotaRefreshInterval)
 		select {
-		case <-ticker.C:
-			_ = s.RefreshAccounts(nil)
+		case <-timer.C:
+			if !s.quotaRefreshIdle(time.Now()) {
+				_ = s.RefreshAccounts(nil)
+			}
+		case <-s.refreshWake:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 		case <-s.refreshStop:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 			return
 		}
 	}
+}
+
+func (s *Service) markRequestActivity() {
+	if s == nil {
+		return
+	}
+	s.lastActivity.Store(time.Now().UnixNano())
+	if s.refreshWake != nil {
+		select {
+		case s.refreshWake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (s *Service) quotaRefreshIdle(now time.Time) bool {
+	last := s.lastActivity.Load()
+	if last == 0 {
+		return true
+	}
+	return now.Sub(time.Unix(0, last)) >= quotaRefreshIdleTimeout
 }
 
 func (s *Service) Stop() {
@@ -330,7 +383,7 @@ func (s *Service) RefreshAccounts(ids map[string]struct{}) error {
 	quotas := make(map[string]QuotaSnapshot)
 	errorsByID := make(map[string]string)
 	if settings.QuotaSource == quotaSourceManagerPlus {
-		quotas, errorsByID = fetchManagerPlusQuotas(s.host, selected, settings, now)
+		quotas, errorsByID = fetchManagerPlusQuotasWithCache(s.host, selected, settings, now, s.managerPlusFallback)
 	} else {
 		type result struct {
 			auth  pluginapi.HostAuthFileEntry

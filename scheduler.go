@@ -40,6 +40,7 @@ func (s *Service) Pick(request pluginapi.SchedulerPickRequest) (pluginapi.Schedu
 	if len(controlledIDs) == 0 {
 		return pluginapi.SchedulerPickResponse{Handled: false}, nil
 	}
+	s.markRequestActivity()
 	now := time.Now()
 	allowed := make([]schedulableCandidate, 0, len(request.Candidates))
 	blockedReasons := make([]string, 0)

@@ -48,7 +48,50 @@ type managerPlusQueryResponse struct {
 	} `json:"items"`
 }
 
+const managerPlusRealtimeFallbackInterval = 5 * time.Minute
+
+type managerPlusRealtimeFallback struct {
+	quota     QuotaSnapshot
+	err       string
+	updatedAt time.Time
+}
+
+type managerPlusRealtimeFallbackCache struct {
+	mu      sync.Mutex
+	entries map[string]managerPlusRealtimeFallback
+}
+
+func newManagerPlusRealtimeFallbackCache() *managerPlusRealtimeFallbackCache {
+	return &managerPlusRealtimeFallbackCache{entries: make(map[string]managerPlusRealtimeFallback)}
+}
+
+func (c *managerPlusRealtimeFallbackCache) get(authID string, now time.Time) (QuotaSnapshot, string, bool) {
+	if c == nil || authID == "" {
+		return QuotaSnapshot{}, "", false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[authID]
+	if !ok || now.Sub(entry.updatedAt) >= managerPlusRealtimeFallbackInterval {
+		return QuotaSnapshot{}, "", false
+	}
+	return entry.quota, entry.err, true
+}
+
+func (c *managerPlusRealtimeFallbackCache) put(authID string, quota QuotaSnapshot, err string, now time.Time) {
+	if c == nil || authID == "" {
+		return
+	}
+	c.mu.Lock()
+	c.entries[authID] = managerPlusRealtimeFallback{quota: quota, err: err, updatedAt: now}
+	c.mu.Unlock()
+}
+
 func fetchManagerPlusQuotas(host HostClient, auths []pluginapi.HostAuthFileEntry, settings GlobalSettings, now time.Time) (map[string]QuotaSnapshot, map[string]string) {
+	return fetchManagerPlusQuotasWithCache(host, auths, settings, now, nil)
+}
+
+func fetchManagerPlusQuotasWithCache(host HostClient, auths []pluginapi.HostAuthFileEntry, settings GlobalSettings, now time.Time, fallbackCache *managerPlusRealtimeFallbackCache) (map[string]QuotaSnapshot, map[string]string) {
 	results := make(map[string]QuotaSnapshot)
 	errorsByID := make(map[string]string)
 	accounts := make([]managerPlusQueryAccount, 0, len(auths))
@@ -152,7 +195,7 @@ func fetchManagerPlusQuotas(host HostClient, auths []pluginapi.HostAuthFileEntry
 		}
 		results[item.RowKey] = snapshot
 	}
-	fillIncompleteManagerPlusQuotas(host, auths, now, results, errorsByID)
+	fillIncompleteManagerPlusQuotas(host, auths, now, results, errorsByID, fallbackCache)
 	for _, auth := range auths {
 		if _, ok := results[auth.ID]; !ok && errorsByID[auth.ID] == "" {
 			errorsByID[auth.ID] = "CPA Manager Plus 未返回该账号额度"
@@ -161,7 +204,7 @@ func fetchManagerPlusQuotas(host HostClient, auths []pluginapi.HostAuthFileEntry
 	return results, errorsByID
 }
 
-func fillIncompleteManagerPlusQuotas(host HostClient, auths []pluginapi.HostAuthFileEntry, now time.Time, results map[string]QuotaSnapshot, errorsByID map[string]string) {
+func fillIncompleteManagerPlusQuotas(host HostClient, auths []pluginapi.HostAuthFileEntry, now time.Time, results map[string]QuotaSnapshot, errorsByID map[string]string, fallbackCache *managerPlusRealtimeFallbackCache) {
 	type queryResult struct {
 		authID string
 		quota  QuotaSnapshot
@@ -177,6 +220,15 @@ func fillIncompleteManagerPlusQuotas(host HostClient, auths []pluginapi.HostAuth
 		}
 		current := results[auth.ID]
 		if current.FiveHour.Present && current.Weekly.Present {
+			continue
+		}
+		if quota, cachedErr, ok := fallbackCache.get(auth.ID, now); ok {
+			if cachedErr == "" {
+				results[auth.ID] = quota
+				delete(errorsByID, auth.ID)
+			} else if _, exists := results[auth.ID]; !exists {
+				errorsByID[auth.ID] = cachedErr
+			}
 			continue
 		}
 		queryCount++
@@ -197,12 +249,15 @@ func fillIncompleteManagerPlusQuotas(host HostClient, auths []pluginapi.HostAuth
 	close(queries)
 	for query := range queries {
 		if query.err == nil {
+			fallbackCache.put(query.authID, query.quota, "", now)
 			results[query.authID] = query.quota
 			delete(errorsByID, query.authID)
 			continue
 		}
+		message := fmt.Sprintf("CPA Manager Plus 额度不完整，实时补全失败: %v", query.err)
+		fallbackCache.put(query.authID, QuotaSnapshot{}, message, now)
 		if _, ok := results[query.authID]; !ok {
-			errorsByID[query.authID] = fmt.Sprintf("CPA Manager Plus 额度不完整，实时补全失败: %v", query.err)
+			errorsByID[query.authID] = message
 		}
 	}
 }

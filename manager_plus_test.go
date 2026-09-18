@@ -139,6 +139,20 @@ func TestFetchManagerPlusQuotasFillsIncompleteSnapshotFromRealtime(t *testing.T)
 	}
 }
 
+func TestManagerPlusRealtimeFallbackCacheExpiresAfterFiveMinutes(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	cache := newManagerPlusRealtimeFallbackCache()
+	quota := QuotaSnapshot{FiveHour: QuotaWindow{Present: true, UsedPercent: 42}}
+	cache.put("auth-a", quota, "", now)
+
+	if cached, err, ok := cache.get("auth-a", now.Add(4*time.Minute)); !ok || err != "" || cached.FiveHour.UsedPercent != 42 {
+		t.Fatalf("fallback cache entry missing before expiry: quota=%+v err=%q ok=%v", cached, err, ok)
+	}
+	if _, _, ok := cache.get("auth-a", now.Add(5*time.Minute)); ok {
+		t.Fatal("fallback cache entry should expire after five minutes")
+	}
+}
+
 func jsonNumber(value int64) string {
 	raw, _ := json.Marshal(value)
 	return string(raw)
