@@ -18,8 +18,14 @@ type managerPlusQueryAccount struct {
 }
 
 type managerPlusQueryIdentity struct {
-	AuthFileSnapshot string `json:"auth_file_snapshot,omitempty"`
-	AuthIndex        string `json:"auth_index"`
+	AccountSnapshot       string `json:"account_snapshot,omitempty"`
+	AuthLabelSnapshot     string `json:"auth_label_snapshot,omitempty"`
+	AuthFileSnapshot      string `json:"auth_file_snapshot,omitempty"`
+	AuthProviderSnapshot  string `json:"auth_provider_snapshot,omitempty"`
+	AuthAccountIDSnapshot string `json:"auth_account_id_snapshot,omitempty"`
+	AuthProjectIDSnapshot string `json:"auth_project_id_snapshot,omitempty"`
+	AuthIndex             string `json:"auth_index"`
+	Source                string `json:"source,omitempty"`
 }
 
 type managerPlusQueryResponse struct {
@@ -48,10 +54,27 @@ func fetchManagerPlusQuotas(host HostClient, auths []pluginapi.HostAuthFileEntry
 			errorsByID[auth.ID] = "账号缺少 auth_index"
 			continue
 		}
+		accountSnapshot := auth.Email
+		authAccountIDSnapshot := ""
+		if credential, err := host.GetAuth(auth.AuthIndex); err == nil {
+			credentialAccountID, credentialEmail := managerPlusCredentialIdentity(credential.JSON)
+			authAccountIDSnapshot = credentialAccountID
+			if strings.TrimSpace(accountSnapshot) == "" {
+				accountSnapshot = credentialEmail
+			}
+		}
 		accounts = append(accounts, managerPlusQueryAccount{
 			RowKey:   auth.ID,
 			Provider: "codex",
-			Account:  managerPlusQueryIdentity{AuthFileSnapshot: auth.Name, AuthIndex: auth.AuthIndex},
+			Account: managerPlusQueryIdentity{
+				AccountSnapshot:       accountSnapshot,
+				AuthLabelSnapshot:     auth.Label,
+				AuthFileSnapshot:      auth.Name,
+				AuthProviderSnapshot:  auth.Provider,
+				AuthAccountIDSnapshot: authAccountIDSnapshot,
+				AuthIndex:             auth.AuthIndex,
+				Source:                auth.Name,
+			},
 		})
 	}
 	if len(accounts) == 0 {
@@ -130,6 +153,28 @@ func fetchManagerPlusQuotas(host HostClient, auths []pluginapi.HostAuthFileEntry
 		}
 	}
 	return results, errorsByID
+}
+
+func managerPlusCredentialIdentity(raw json.RawMessage) (accountID, email string) {
+	var root map[string]json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &root) != nil {
+		return "", ""
+	}
+	accountID = firstString(root, "account_id", "chatgpt_account_id", "accountId", "chatgptAccountId")
+	email = firstString(root, "email", "account_snapshot", "accountSnapshot")
+	for _, key := range []string{"tokens", "credentials", "auth", "oauth", "session"} {
+		var nested map[string]json.RawMessage
+		if value, ok := root[key]; !ok || json.Unmarshal(value, &nested) != nil {
+			continue
+		}
+		if accountID == "" {
+			accountID = firstString(nested, "account_id", "chatgpt_account_id", "accountId", "chatgptAccountId")
+		}
+		if email == "" {
+			email = firstString(nested, "email", "account_snapshot", "accountSnapshot")
+		}
+	}
+	return strings.TrimSpace(accountID), strings.TrimSpace(email)
 }
 
 func markManagerPlusError(auths []pluginapi.HostAuthFileEntry, target map[string]string, message string) {
