@@ -26,7 +26,10 @@ let accounts = [
   account('auth-dev', 'dev-team@example.com', 'plus', 3, 0, 78, 64, false),
   account('auth-ops', 'ops@example.com', 'team', 0, 0, 86, 97, true),
   account('auth-qa', 'qa@example.com', 'plus', 1, 0, 41, 52, false),
-  account('auth-bot', 'bot@example.com', 'team', 3, 2, 33, 28, false)
+  account('auth-bot', 'bot@example.com', 'team', 3, 2, 33, 28, false),
+  account('auth-stage', 'stage@example.com', 'plus', 0, 0, 18, 37, false),
+  account('auth-support', 'support@example.com', 'team', 1, 0, 24, 46, false),
+  account('auth-ci', 'ci@example.com', 'plus', 0, 0, 12, 21, false)
 ];
 
 function account(authId, email, plan, active, queued, five, week, blocked) {

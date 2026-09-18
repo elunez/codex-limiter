@@ -15,7 +15,7 @@ func TestManagementRegistrationAndPage(t *testing.T) {
 	if len(registration.Resources) != 1 || registration.Resources[0].Menu != "调度控制" {
 		t.Fatalf("resources = %+v", registration.Resources)
 	}
-	for _, text := range []string{"Codex 调度控制", "额度查询失败时", "实时查询", "账号调度状态", "自动读取额度快照", "savedManagementKey", ">序号<", ">排队<", ">停止调度<"} {
+	for _, text := range []string{"Codex 调度控制", "额度查询失败时", "实时查询", "账号调度状态", "自动读取额度快照", "savedManagementKey", ">序号<", ">排队<", ">停止调度<", "5 条/页", "account-page-jump"} {
 		if !strings.Contains(statusPageHTML, text) {
 			t.Fatalf("page missing %q", text)
 		}
